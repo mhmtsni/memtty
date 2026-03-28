@@ -1,5 +1,8 @@
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    time::{Duration, Instant},
+};
 use tokio::sync::mpsc;
 
 pub enum PtyInput {
@@ -31,12 +34,30 @@ pub async fn run(
 
     // --- Thread: Read from PTY, send to UI ---
     tokio::task::spawn_blocking(move || {
-        let mut buf = [0u8; 1024];
+        let mut read_buf = [0u8; 1024];
+        let mut batch = Vec::with_capacity(32768);
+        let mut last_flush = Instant::now();
+        let flush_interval = Duration::from_millis(8);
+        let max_batch_size = 8192;
         loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
+            match reader.read(&mut read_buf) {
+                Ok(0) => {
+                    // flush remaining
+                    if !batch.is_empty() {
+                        let _ = tx_ui.blocking_send(batch.clone());
+                    }
+                    break;
+                }
                 Ok(n) => {
-                    let _ = tx_ui.blocking_send(buf[..n].to_vec());
+                    batch.extend_from_slice(&read_buf[..n]);
+
+                    let should_flush =
+                        batch.len() >= max_batch_size || last_flush.elapsed() >= flush_interval;
+
+                    if should_flush {
+                        let _ = tx_ui.blocking_send(std::mem::take(&mut batch));
+                        last_flush = Instant::now();
+                    }
                 }
                 Err(_) => break,
             }

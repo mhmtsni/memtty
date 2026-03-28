@@ -1,10 +1,8 @@
-use crate::ui::ui::MyApp;
+use crate::ui::terminal_view::run;
 mod pty;
 mod terminal;
 mod ui;
 
-fn main() -> iced::Result {
-    iced::application(MyApp::new, MyApp::update, MyApp::view)
-        .subscription(MyApp::subscription)
-        .run()
+fn main() {
+    run().unwrap();
 }

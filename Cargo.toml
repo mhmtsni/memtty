@@ -5,11 +5,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.14.0", features = ["tokio", "debug", "canvas"] }
+glyphon = "0.10.0"
+pollster = "0.4.0"
 portable-pty = "0.9.0"
 tokio = { version = "1.50.0", features = ["full"] }
 tokio-stream = "0.1.17"
 vte = "0.15.0"
+wgpu = "29.0.1"
+winit = "0.30.13"
 
 [profile.release]
 codegen-units = 1

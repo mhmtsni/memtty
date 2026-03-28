@@ -1,25 +1,37 @@
 use std::{collections::VecDeque, fmt::Debug};
 
-use iced::Color;
 use vte::{Parser, Perform};
 
 const MAX_SCROLLBACK: usize = 1000;
-const ROWS: usize = 48;
-const COLS: usize = 160;
+const ROWS: usize = 24;
+const COLS: usize = 80;
+
+pub mod style {
+    pub const BOLD: u8 = 1 << 0;
+    pub const ITALIC: u8 = 1 << 1;
+    pub const UNDERLINE: u8 = 1 << 2;
+    pub const STRIKETHROUGH: u8 = 1 << 3;
+    pub const DIM: u8 = 1 << 4;
+    pub const BLINK: u8 = 1 << 5;
+    pub const REVERSE: u8 = 1 << 6;
+    pub const HIDDEN: u8 = 1 << 7;
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Cell {
     pub c: char,
-    pub fg: Color,
-    pub bg: Color,
+    // pub fg: Color,
+    // pub bg: Color,
+    pub style: u8,
 }
 
 impl Default for Cell {
     fn default() -> Self {
         Self {
             c: ' ',
-            fg: Color::WHITE,
-            bg: Color::BLACK,
+            // fg: Color::WHITE,
+            // bg: Color::BLACK,
+            style: 0,
         }
     }
 }
@@ -33,19 +45,12 @@ pub struct Performer {
     pub cols: usize,
     pub rows: usize,
     pub buffer: String,
-    pub current_fg: Color,
-    pub current_bg: Color,
-    pub bold: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub strikethrough: bool,
-    pub dim: bool,
-    pub blink: bool,
-    pub reverse: bool,
-    pub hidden: bool,
+    // pub current_fg: Color,
+    // pub current_bg: Color,
     pub cursor_style: CursorStyle,
     pub cursor_blinking: bool,
     pub cursor_visible: bool,
+    pub current_style: u8,
 }
 
 #[derive(Default)]
@@ -80,16 +85,9 @@ impl Terminal {
                 cols: COLS,
                 rows: ROWS,
                 buffer: String::new(),
-                current_fg: Color::WHITE,
-                current_bg: Color::BLACK,
-                bold: false,
-                italic: false,
-                underline: false,
-                strikethrough: false,
-                dim: false,
-                blink: false,
-                reverse: false,
-                hidden: false,
+                // current_fg: Color::WHITE,
+                // current_bg: Color::BLACK,
+                current_style: 0,
             },
         }
     }
@@ -108,8 +106,9 @@ impl Performer {
             vec![
                 Cell {
                     c: ' ',
-                    fg: self.current_fg,
-                    bg: self.current_bg,
+                    // fg: self.current_fg,
+                    // bg: self.current_bg,
+                    style: 0,
                 };
                 new_cols
             ],
@@ -119,8 +118,9 @@ impl Performer {
                 new_cols,
                 Cell {
                     c: ' ',
-                    fg: self.current_fg,
-                    bg: self.current_bg,
+                    // fg: self.current_fg,
+                    // bg: self.current_bg,
+                    style: 0,
                 },
             );
         }
@@ -139,8 +139,9 @@ impl Performer {
             self.grid.push_back(vec![
                 Cell {
                     c: ' ',
-                    fg: self.current_fg,
-                    bg: self.current_bg,
+                    // fg: self.current_fg,
+                    // bg: self.current_bg,
+                    style: 0,
                 };
                 self.cols
             ]);
@@ -153,8 +154,9 @@ impl Performer {
             self.grid.push_front(vec![
                 Cell {
                     c: ' ',
-                    fg: self.current_fg,
-                    bg: self.current_bg,
+                    // fg: self.current_fg,
+                    // bg: self.current_bg,
+                    style: 0,
                 };
                 self.cols
             ]);
@@ -244,59 +246,77 @@ impl Perform for Performer {
                 match p0 {
                     0 => {
                         // Cursor to end of screen
-                        for x in self.cursor_x..self.cols {
-                            self.grid[self.cursor_y][x] = Cell {
-                                c: ' ',
-                                fg: self.current_fg,
-                                bg: self.current_bg,
-                            };
+                        if self.cursor_y < self.grid.len() {
+                            for x in self.cursor_x..self.cols.min(self.grid[self.cursor_y].len()) {
+                                self.grid[self.cursor_y][x] = Cell {
+                                    c: ' ',
+                                    // fg: self.current_fg,
+                                    // bg: self.current_bg,
+                                    style: 0,
+                                };
+                            }
                         }
-                        for y in (self.cursor_y + 1)..self.rows {
+
+                        for y in (self.cursor_y + 1)..self.grid.len() {
                             self.grid[y] = vec![
                                 Cell {
                                     c: ' ',
-                                    fg: self.current_fg,
-                                    bg: self.current_bg,
+                                    // fg: self.current_fg,
+                                    // bg: self.current_bg,
+                                    style: 0,
                                 };
                                 self.cols
                             ];
                         }
                     }
+
                     1 => {
                         // Start of screen to cursor
-                        for y in 0..self.cursor_y {
+                        for y in 0..self.cursor_y.min(self.grid.len()) {
                             self.grid[y] = vec![
                                 Cell {
                                     c: ' ',
-                                    fg: self.current_fg,
-                                    bg: self.current_bg,
+                                    // fg: self.current_fg,
+                                    // bg: self.current_bg,
+                                    style: 0,
                                 };
                                 self.cols
                             ];
                         }
-                        for x in 0..=self.cursor_x {
-                            self.grid[self.cursor_y][x] = Cell {
-                                c: ' ',
-                                fg: self.current_fg,
-                                bg: self.current_bg,
-                            };
+
+                        if self.cursor_y < self.grid.len() {
+                            for x in 0..=self
+                                .cursor_x
+                                .min(self.grid[self.cursor_y].len().saturating_sub(1))
+                            {
+                                self.grid[self.cursor_y][x] = Cell {
+                                    c: ' ',
+                                    // fg: self.current_fg,
+                                    // bg: self.current_bg,
+                                    style: 0,
+                                };
+                            }
                         }
                     }
+
                     2 | 3 => {
                         // Entire screen
-                        for y in 0..self.rows {
+                        for y in 0..self.grid.len() {
                             self.grid[y] = vec![
                                 Cell {
                                     c: ' ',
-                                    fg: self.current_fg,
-                                    bg: self.current_bg,
+                                    // fg: self.current_fg,
+                                    // bg: self.current_bg,
+                                    style: 0,
                                 };
                                 self.cols
                             ];
                         }
+
                         self.cursor_x = 0;
                         self.cursor_y = 0;
                     }
+
                     _ => {}
                 }
             }
@@ -308,8 +328,9 @@ impl Perform for Performer {
                         for x in self.cursor_x..self.cols {
                             self.grid[self.cursor_y][x] = Cell {
                                 c: ' ',
-                                fg: self.current_fg,
-                                bg: self.current_bg,
+                                // fg: self.current_fg,
+                                // bg: self.current_bg,
+                                style: 0,
                             };
                         }
                     }
@@ -318,8 +339,9 @@ impl Perform for Performer {
                         for x in 0..=self.cursor_x {
                             self.grid[self.cursor_y][x] = Cell {
                                 c: ' ',
-                                fg: self.current_fg,
-                                bg: self.current_bg,
+                                // fg: self.current_fg,
+                                // bg: self.current_bg,
+                                style: 0,
                             };
                         }
                     }
@@ -328,8 +350,9 @@ impl Perform for Performer {
                         self.grid[self.cursor_y] = vec![
                             Cell {
                                 c: ' ',
-                                fg: self.current_fg,
-                                bg: self.current_bg,
+                                // fg: self.current_fg,
+                                // bg: self.current_bg,
+                                style: 0,
                             };
                             self.cols
                         ];
@@ -343,8 +366,9 @@ impl Perform for Performer {
                 for x in self.cursor_x..(self.cursor_x + n).min(self.cols) {
                     self.grid[self.cursor_y][x] = Cell {
                         c: ' ',
-                        fg: self.current_fg,
-                        bg: self.current_bg,
+                        // fg: self.current_fg,
+                        // bg: self.current_bg,
+                        style: 0,
                     };
                 }
             }
@@ -378,8 +402,9 @@ impl Perform for Performer {
                         vec![
                             Cell {
                                 c: ' ',
-                                fg: self.current_fg,
-                                bg: self.current_bg,
+                                // fg: self.current_fg,
+                                // bg: self.current_bg,
+                                style: 0,
                             };
                             self.cols
                         ],
@@ -395,8 +420,9 @@ impl Perform for Performer {
                         self.grid.push_back(vec![
                             Cell {
                                 c: ' ',
-                                fg: self.current_fg,
-                                bg: self.current_bg,
+                                // fg: self.current_fg,
+                                // bg: self.current_bg,
+                                style: 0,
                             };
                             self.cols
                         ]);
@@ -412,8 +438,9 @@ impl Perform for Performer {
                         row.remove(self.cursor_x);
                         row.push(Cell {
                             c: ' ',
-                            fg: self.current_fg,
-                            bg: self.current_bg,
+                            // fg: self.current_fg,
+                            // bg: self.current_bg,
+                            style: 0,
                         });
                     }
                 }
@@ -430,8 +457,9 @@ impl Perform for Performer {
                         self.cursor_x,
                         Cell {
                             c: ' ',
-                            fg: self.current_fg,
-                            bg: self.current_bg,
+                            // fg: self.current_fg,
+                            // bg: self.current_bg,
+                            style: 0,
                         },
                     );
                 }
@@ -452,156 +480,148 @@ impl Perform for Performer {
             // -------------------------------------------------------
             // SGR - Select Graphic Rendition (colors & attributes)
             // -------------------------------------------------------
-            'm' => {
-                let mut i = 0;
-                while i < params_vec.len() {
-                    match params_vec[i] {
-                        [0] | [] => {
-                            self.current_fg = Color::from_rgb8(229, 229, 229);
-                            self.current_bg = Color::from_rgb8(0, 0, 0);
-                            self.bold = false;
-                            self.italic = false;
-                            self.underline = false;
-                            self.strikethrough = false;
-                            self.dim = false;
-                            self.blink = false;
-                            self.reverse = false;
-                            self.hidden = false;
-                        }
-
-                        // --- Text Attributes ---
-                        [1] => self.bold = true,
-                        [2] => self.dim = true,
-                        [3] => self.italic = true,
-                        [4] => self.underline = true,
-                        [5] | [6] => self.blink = true,
-                        [7] => self.reverse = true,
-                        [8] => self.hidden = true,
-                        [9] => self.strikethrough = true,
-
-                        // --- Attribute Resets ---
-                        [21] | [22] => {
-                            self.bold = false;
-                            self.dim = false;
-                        }
-                        [23] => self.italic = false,
-                        [24] => self.underline = false,
-                        [25] => self.blink = false,
-                        [27] => self.reverse = false,
-                        [28] => self.hidden = false,
-                        [29] => self.strikethrough = false,
-
-                        // --- Standard Foreground Colors (30-37) ---
-                        [30] => self.current_fg = Color::from_rgb8(0, 0, 0),
-                        [31] => self.current_fg = Color::from_rgb8(205, 0, 0),
-                        [32] => self.current_fg = Color::from_rgb8(0, 205, 0),
-                        [33] => self.current_fg = Color::from_rgb8(205, 205, 0),
-                        [34] => self.current_fg = Color::from_rgb8(0, 0, 238),
-                        [35] => self.current_fg = Color::from_rgb8(205, 0, 205),
-                        [36] => self.current_fg = Color::from_rgb8(0, 205, 205),
-                        [39] => self.current_fg = Color::from_rgb8(229, 229, 229),
-
-                        // --- 256-color / Truecolor Foreground (38) ---
-                        [38, 5, n] => {
-                            self.current_fg = color_from_256(*n as u8);
-                        }
-                        [38, 2, r, g, b] => {
-                            self.current_fg = Color::from_rgb8(*r as u8, *g as u8, *b as u8);
-                        }
-                        [38] => {
-                            if i + 1 < params_vec.len() {
-                                match params_vec[i + 1] {
-                                    [5] if i + 2 < params_vec.len() => {
-                                        if let [n] = params_vec[i + 2] {
-                                            self.current_fg = color_from_256(*n as u8);
-                                            i += 2;
-                                        }
-                                    }
-                                    [2] if i + 4 < params_vec.len() => {
-                                        if let ([r], [g], [b]) = (
-                                            params_vec[i + 2],
-                                            params_vec[i + 3],
-                                            params_vec[i + 4],
-                                        ) {
-                                            self.current_fg =
-                                                Color::from_rgb8(*r as u8, *g as u8, *b as u8);
-                                            i += 4;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        // --- Standard Background Colors (40-47) ---
-                        [40] => self.current_bg = Color::from_rgb8(0, 0, 0),
-                        [41] => self.current_bg = Color::from_rgb8(205, 0, 0),
-                        [42] => self.current_bg = Color::from_rgb8(0, 205, 0),
-                        [43] => self.current_bg = Color::from_rgb8(205, 205, 0),
-                        [44] => self.current_bg = Color::from_rgb8(0, 0, 238),
-                        [45] => self.current_bg = Color::from_rgb8(205, 0, 205),
-                        [46] => self.current_bg = Color::from_rgb8(0, 205, 205),
-                        [47] => self.current_bg = Color::from_rgb8(229, 229, 229),
-                        [49] => self.current_bg = Color::from_rgb8(0, 0, 0),
-
-                        // --- 256-color / Truecolor Background (48) ---
-                        [48, 5, n] => {
-                            self.current_bg = color_from_256(*n as u8);
-                        }
-                        [48, 2, r, g, b] => {
-                            self.current_bg = Color::from_rgb8(*r as u8, *g as u8, *b as u8);
-                        }
-                        [48] => {
-                            if i + 1 < params_vec.len() {
-                                match params_vec[i + 1] {
-                                    [5] if i + 2 < params_vec.len() => {
-                                        if let [n] = params_vec[i + 2] {
-                                            self.current_bg = color_from_256(*n as u8);
-                                            i += 2;
-                                        }
-                                    }
-                                    [2] if i + 4 < params_vec.len() => {
-                                        if let ([r], [g], [b]) = (
-                                            params_vec[i + 2],
-                                            params_vec[i + 3],
-                                            params_vec[i + 4],
-                                        ) {
-                                            self.current_bg =
-                                                Color::from_rgb8(*r as u8, *g as u8, *b as u8);
-                                            i += 4;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        // --- Bright Foreground Colors (90-97) ---
-                        [90] => self.current_fg = Color::from_rgb8(127, 127, 127),
-                        [91] => self.current_fg = Color::from_rgb8(255, 85, 85),
-                        [92] => self.current_fg = Color::from_rgb8(85, 255, 85),
-                        [93] => self.current_fg = Color::from_rgb8(255, 255, 85),
-                        [94] => self.current_fg = Color::from_rgb8(85, 85, 255),
-                        [95] => self.current_fg = Color::from_rgb8(255, 85, 255),
-                        [96] => self.current_fg = Color::from_rgb8(85, 255, 255),
-                        [97] => self.current_fg = Color::from_rgb8(255, 255, 255),
-
-                        // --- Bright Background Colors (100-107) ---
-                        [100] => self.current_bg = Color::from_rgb8(127, 127, 127),
-                        [101] => self.current_bg = Color::from_rgb8(255, 85, 85),
-                        [102] => self.current_bg = Color::from_rgb8(85, 255, 85),
-                        [103] => self.current_bg = Color::from_rgb8(255, 255, 85),
-                        [104] => self.current_bg = Color::from_rgb8(85, 85, 255),
-                        [105] => self.current_bg = Color::from_rgb8(255, 85, 255),
-                        [106] => self.current_bg = Color::from_rgb8(85, 255, 255),
-                        [107] => self.current_bg = Color::from_rgb8(255, 255, 255),
-
-                        _ => {}
-                    }
-                    i += 1;
-                }
-            }
-
+            // 'm' => {
+            //     let mut i = 0;
+            //     while i < params_vec.len() {
+            //         match params_vec[i] {
+            //             [0] | [] => {
+            //                 self.current_fg = Color::from_rgb8(229, 229, 229);
+            //                 self.current_bg = Color::from_rgb8(0, 0, 0);
+            //                 self.current_style = 0;
+            //             }
+            //
+            //             // --- Text Attributes ---
+            //             [1] => self.current_style |= style::BOLD,
+            //             [2] => self.current_style |= style::DIM,
+            //             [3] => self.current_style |= style::ITALIC,
+            //             [4] => self.current_style |= style::UNDERLINE,
+            //             [5] | [6] => self.current_style |= style::BLINK,
+            //             [7] => self.current_style |= style::REVERSE,
+            //             [8] => self.current_style |= style::HIDDEN,
+            //             [9] => self.current_style |= style::STRIKETHROUGH,
+            //
+            //             // --- Attribute Resets ---
+            //             [21] | [22] => {
+            //                 // Reset bold + dim
+            //                 self.current_style &= !(style::BOLD | style::DIM);
+            //             }
+            //             [23] => self.current_style &= !style::ITALIC,
+            //             [24] => self.current_style &= !style::UNDERLINE,
+            //             [25] => self.current_style &= !style::BLINK,
+            //             [27] => self.current_style &= !style::REVERSE,
+            //             [28] => self.current_style &= !style::HIDDEN,
+            //             [29] => self.current_style &= !style::STRIKETHROUGH,
+            //
+            //             // --- Standard Foreground Colors (30-37) ---
+            //             [30] => self.current_fg = Color::from_rgb8(0, 0, 0),
+            //             [31] => self.current_fg = Color::from_rgb8(205, 0, 0),
+            //             [32] => self.current_fg = Color::from_rgb8(0, 205, 0),
+            //             [33] => self.current_fg = Color::from_rgb8(205, 205, 0),
+            //             [34] => self.current_fg = Color::from_rgb8(0, 0, 238),
+            //             [35] => self.current_fg = Color::from_rgb8(205, 0, 205),
+            //             [36] => self.current_fg = Color::from_rgb8(0, 205, 205),
+            //             [39] => self.current_fg = Color::from_rgb8(229, 229, 229),
+            //
+            //             // --- 256-color / Truecolor Foreground (38) ---
+            //             [38, 5, n] => {
+            //                 self.current_fg = color_from_256(*n as u8);
+            //             }
+            //             [38, 2, r, g, b] => {
+            //                 self.current_fg = Color::from_rgb8(*r as u8, *g as u8, *b as u8);
+            //             }
+            //             [38] => {
+            //                 if i + 1 < params_vec.len() {
+            //                     match params_vec[i + 1] {
+            //                         [5] if i + 2 < params_vec.len() => {
+            //                             if let [n] = params_vec[i + 2] {
+            //                                 self.current_fg = color_from_256(*n as u8);
+            //                                 i += 2;
+            //                             }
+            //                         }
+            //                         [2] if i + 4 < params_vec.len() => {
+            //                             if let ([r], [g], [b]) = (
+            //                                 params_vec[i + 2],
+            //                                 params_vec[i + 3],
+            //                                 params_vec[i + 4],
+            //                             ) {
+            //                                 self.current_fg =
+            //                                     Color::from_rgb8(*r as u8, *g as u8, *b as u8);
+            //                                 i += 4;
+            //                             }
+            //                         }
+            //                         _ => {}
+            //                     }
+            //                 }
+            //             }
+            //
+            //             // --- Standard Background Colors (40-47) ---
+            //             [40] => self.current_bg = Color::from_rgb8(0, 0, 0),
+            //             [41] => self.current_bg = Color::from_rgb8(205, 0, 0),
+            //             [42] => self.current_bg = Color::from_rgb8(0, 205, 0),
+            //             [43] => self.current_bg = Color::from_rgb8(205, 205, 0),
+            //             [44] => self.current_bg = Color::from_rgb8(0, 0, 238),
+            //             [45] => self.current_bg = Color::from_rgb8(205, 0, 205),
+            //             [46] => self.current_bg = Color::from_rgb8(0, 205, 205),
+            //             [47] => self.current_bg = Color::from_rgb8(229, 229, 229),
+            //             [49] => self.current_bg = Color::from_rgb8(0, 0, 0),
+            //
+            //             // --- 256-color / Truecolor Background (48) ---
+            //             [48, 5, n] => {
+            //                 self.current_bg = color_from_256(*n as u8);
+            //             }
+            //             [48, 2, r, g, b] => {
+            //                 self.current_bg = Color::from_rgb8(*r as u8, *g as u8, *b as u8);
+            //             }
+            //             [48] => {
+            //                 if i + 1 < params_vec.len() {
+            //                     match params_vec[i + 1] {
+            //                         [5] if i + 2 < params_vec.len() => {
+            //                             if let [n] = params_vec[i + 2] {
+            //                                 self.current_bg = color_from_256(*n as u8);
+            //                                 i += 2;
+            //                             }
+            //                         }
+            //                         [2] if i + 4 < params_vec.len() => {
+            //                             if let ([r], [g], [b]) = (
+            //                                 params_vec[i + 2],
+            //                                 params_vec[i + 3],
+            //                                 params_vec[i + 4],
+            //                             ) {
+            //                                 self.current_bg =
+            //                                     Color::from_rgb8(*r as u8, *g as u8, *b as u8);
+            //                                 i += 4;
+            //                             }
+            //                         }
+            //                         _ => {}
+            //                     }
+            //                 }
+            //             }
+            //
+            //             // --- Bright Foreground Colors (90-97) ---
+            //             [90] => self.current_fg = Color::from_rgb8(127, 127, 127),
+            //             [91] => self.current_fg = Color::from_rgb8(255, 85, 85),
+            //             [92] => self.current_fg = Color::from_rgb8(85, 255, 85),
+            //             [93] => self.current_fg = Color::from_rgb8(255, 255, 85),
+            //             [94] => self.current_fg = Color::from_rgb8(85, 85, 255),
+            //             [95] => self.current_fg = Color::from_rgb8(255, 85, 255),
+            //             [96] => self.current_fg = Color::from_rgb8(85, 255, 255),
+            //             [97] => self.current_fg = Color::from_rgb8(255, 255, 255),
+            //
+            //             // --- Bright Background Colors (100-107) ---
+            //             [100] => self.current_bg = Color::from_rgb8(127, 127, 127),
+            //             [101] => self.current_bg = Color::from_rgb8(255, 85, 85),
+            //             [102] => self.current_bg = Color::from_rgb8(85, 255, 85),
+            //             [103] => self.current_bg = Color::from_rgb8(255, 255, 85),
+            //             [104] => self.current_bg = Color::from_rgb8(85, 85, 255),
+            //             [105] => self.current_bg = Color::from_rgb8(255, 85, 255),
+            //             [106] => self.current_bg = Color::from_rgb8(85, 255, 255),
+            //             [107] => self.current_bg = Color::from_rgb8(255, 255, 255),
+            //
+            //             _ => {}
+            //         }
+            //         i += 1;
+            //     }
+            // }
             _ => {}
         }
     }
@@ -610,8 +630,9 @@ impl Perform for Performer {
         if self.cursor_y < self.rows && self.cursor_x < self.cols {
             self.grid[self.cursor_y][self.cursor_x] = Cell {
                 c,
-                fg: self.current_fg,
-                bg: self.current_bg,
+                // fg: self.current_fg,
+                // bg: self.current_bg,
+                style: self.current_style,
             };
             self.cursor_x += 1;
         }
@@ -647,42 +668,66 @@ impl Perform for Performer {
     }
 }
 
-fn color_from_256(n: u8) -> Color {
-    match n {
-        // --- 0-7: Standard colors ---
-        0 => Color::from_rgb8(0, 0, 0),
-        1 => Color::from_rgb8(205, 0, 0),
-        2 => Color::from_rgb8(0, 205, 0),
-        3 => Color::from_rgb8(205, 205, 0),
-        4 => Color::from_rgb8(0, 0, 238),
-        5 => Color::from_rgb8(205, 0, 205),
-        6 => Color::from_rgb8(0, 205, 205),
-        7 => Color::from_rgb8(229, 229, 229),
+// fn color_from_256(n: u8) -> Color {
+//     match n {
+//         // --- 0-7: Standard colors ---
+//         0 => Color::from_rgb8(0, 0, 0),
+//         1 => Color::from_rgb8(205, 0, 0),
+//         2 => Color::from_rgb8(0, 205, 0),
+//         3 => Color::from_rgb8(205, 205, 0),
+//         4 => Color::from_rgb8(0, 0, 238),
+//         5 => Color::from_rgb8(205, 0, 205),
+//         6 => Color::from_rgb8(0, 205, 205),
+//         7 => Color::from_rgb8(229, 229, 229),
+//
+//         // --- 8-15: Bright colors ---
+//         8 => Color::from_rgb8(127, 127, 127),
+//         9 => Color::from_rgb8(255, 85, 85),
+//         10 => Color::from_rgb8(85, 255, 85),
+//         11 => Color::from_rgb8(255, 255, 85),
+//         12 => Color::from_rgb8(85, 85, 255),
+//         13 => Color::from_rgb8(255, 85, 255),
+//         14 => Color::from_rgb8(85, 255, 255),
+//         15 => Color::from_rgb8(255, 255, 255),
+//         // --- 16-231: 6x6x6 color cube ---
+//         // 16..=231 => {
+//         //     let n = n - 16;
+//         //     let b = n % 6;
+//         //     let g = (n / 6) % 6;
+//         //     let r = n / 36;
+//         //     let to_val = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+//         //     Color::from_rgb8(to_val(r), to_val(g), to_val(b))
+//         // }
+//
+//         // --- 232-255: Grayscale ramp ---
+//         // 232..=255 => {
+//         //     let v = 8 + (n - 232) * 10;
+//         //     Color::from_rgb8(v, v, v)
+//         // }
+//     }
+// }
 
-        // --- 8-15: Bright colors ---
-        8 => Color::from_rgb8(127, 127, 127),
-        9 => Color::from_rgb8(255, 85, 85),
-        10 => Color::from_rgb8(85, 255, 85),
-        11 => Color::from_rgb8(255, 255, 85),
-        12 => Color::from_rgb8(85, 85, 255),
-        13 => Color::from_rgb8(255, 85, 255),
-        14 => Color::from_rgb8(85, 255, 255),
-        15 => Color::from_rgb8(255, 255, 255),
+#[test]
+fn test_bold_flag() {
+    let mut term = Terminal::new();
 
-        // --- 16-231: 6x6x6 color cube ---
-        16..=231 => {
-            let n = n - 16;
-            let b = n % 6;
-            let g = (n / 6) % 6;
-            let r = n / 36;
-            let to_val = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
-            Color::from_rgb8(to_val(r), to_val(g), to_val(b))
-        }
+    // ESC[1mA
+    term.process(b"\x1b[1mA");
 
-        // --- 232-255: Grayscale ramp ---
-        232..=255 => {
-            let v = 8 + (n - 232) * 10;
-            Color::from_rgb8(v, v, v)
-        }
-    }
+    let cell = term.performer.grid[0][0];
+
+    assert!(cell.style & style::BOLD != 0);
+}
+
+#[test]
+fn test_reset_bold() {
+    let mut term = Terminal::new();
+
+    term.process(b"\x1b[1mA\x1b[22mB");
+
+    let a = term.performer.grid[0][0];
+    let b = term.performer.grid[0][1];
+
+    assert!(a.style & style::BOLD != 0);
+    assert!(b.style & style::BOLD == 0);
 }
