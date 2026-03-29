@@ -1,6 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, Sender};
 use winit::window::Window;
 
 use crate::{
@@ -22,7 +22,7 @@ pub enum Message {
 pub struct MyApp {
     window: Arc<Window>,
     tx: Option<mpsc::Sender<PtyInput>>,
-    terminal: Terminal,
+    pub terminal: Terminal,
     pub scroll_offset: i32,
     full_screen: bool,
 }
@@ -30,30 +30,14 @@ pub struct MyApp {
 const BLINKING_INTERVAL: u64 = 500;
 
 impl MyApp {
-    pub fn new(window: Arc<Window>) -> Result<(Self), Box<dyn std::error::Error>> {
-        let (tx_to_pty, rx_from_ui) = mpsc::channel::<PtyInput>(100);
-        let (tx_to_ui, rx_from_pty) = mpsc::channel::<Vec<u8>>(100);
-
-        // let start_pty = iced::Task::perform(
-        //     async move {
-        //         let _ = run(tx_to_ui, rx_from_ui).await;
-        //     },
-        //     |_| Message::PtyExited,
-        // );
-
-        // Stream PTY output into the app message loop.
-        // let read_pty_output =
-        //     iced::Task::run(ReceiverStream::new(rx_from_pty), Message::PtyDataReceived);
-        //
-        // let task = iced::Task::batch([start_pty, read_pty_output]);
-
-        Ok(Self {
+    pub fn new(window: Arc<Window>, tx_to_pty: Sender<PtyInput>) -> Self {
+        Self {
             full_screen: false,
             tx: Some(tx_to_pty),
             terminal: Terminal::new(),
             scroll_offset: 0,
             window,
-        })
+        }
     }
 
     // pub fn update(&mut self, message: Message) -> iced::Task<Message> {

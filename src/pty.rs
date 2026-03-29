@@ -42,9 +42,8 @@ pub async fn run(
         loop {
             match reader.read(&mut read_buf) {
                 Ok(0) => {
-                    // flush remaining
                     if !batch.is_empty() {
-                        let _ = tx_ui.blocking_send(batch.clone());
+                        let _ = tx_ui.blocking_send(std::mem::take(&mut batch));
                     }
                     break;
                 }
@@ -60,6 +59,11 @@ pub async fn run(
                     }
                 }
                 Err(_) => break,
+            }
+
+            if !batch.is_empty() && last_flush.elapsed() >= flush_interval {
+                let _ = tx_ui.blocking_send(std::mem::take(&mut batch));
+                last_flush = Instant::now();
             }
         }
     });

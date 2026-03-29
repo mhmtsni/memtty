@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use crate::terminal::Terminal;
+use crate::ui::ui::Message;
 use winit::{
     application::ApplicationHandler,
     event::{KeyEvent, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     keyboard::PhysicalKey,
     window::Window,
 };
@@ -13,18 +13,9 @@ use crate::ui::ui::MyApp;
 
 pub struct TerminalView {
     // pub terminal: Terminal,
-    pub app_state: Option<MyApp>,
+    pub app: Option<MyApp>,
     pub window: Option<Arc<Window>>,
-}
-
-impl TerminalView {
-    pub fn new() -> Self {
-        Self {
-            // terminal,
-            app_state: None,
-            window: None,
-        }
-    }
+    pub proxy: Option<EventLoopProxy<Message>>,
 }
 
 // impl<'a> Program<Message, Theme, Renderer> for TerminalView<'a> {
@@ -154,19 +145,60 @@ impl TerminalView {
 // }
 //
 
-impl ApplicationHandler<MyApp> for TerminalView {
+impl ApplicationHandler<Message> for TerminalView {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        #[allow(unused_mut)]
-        let mut window_attributes = Window::default_attributes()
-            .with_title("Terminal");
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes().with_title("Terminal"))
+                .unwrap(),
+        );
 
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        // channels
+        let (tx_to_pty, rx_from_ui) = tokio::sync::mpsc::channel(100);
+        let (tx_to_ui, mut rx_from_pty) = tokio::sync::mpsc::channel(100);
+
+        // create app
+        let app = MyApp::new(window.clone(), tx_to_pty);
+
+        let proxy = self.proxy.as_ref().unwrap().clone();
+
+        // spawn PTY
+        tokio::spawn(async move {
+            tokio::spawn(async move {
+                let _ = crate::pty::run(tx_to_ui, rx_from_ui).await;
+            });
+
+            while let Some(data) = rx_from_pty.recv().await {
+                let _ = proxy.send_event(Message::PtyDataReceived(data));
+            }
+
+            let _ = proxy.send_event(Message::PtyExited);
+        });
+
         self.window = Some(window);
+        self.app = Some(app);
     }
 
-    #[allow(unused_mut)]
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, mut event: MyApp) {
-        self.app_state = Some(event);
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: Message) {
+        let app = match &mut self.app {
+            Some(app) => app,
+            None => return,
+        };
+
+        match event {
+            Message::PtyDataReceived(data) => {
+                println!("PTY DATA: {} bytes", data.len());
+                app.terminal.process(&data);
+            }
+            Message::PtyExited => {
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
     fn window_event(
         &mut self,
@@ -174,7 +206,7 @@ impl ApplicationHandler<MyApp> for TerminalView {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        let state = match &mut self.app_state {
+        let state = match &mut self.app {
             Some(canvas) => canvas,
             None => return,
         };
@@ -182,7 +214,12 @@ impl ApplicationHandler<MyApp> for TerminalView {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
-                state.view();
+                println!("REDRAW CALLED");
+
+                for row in &state.terminal.performer.grid {
+                    let line: String = row.iter().map(|c| c.c).collect();
+                    println!("{}", line);
+                }
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -203,11 +240,15 @@ impl ApplicationHandler<MyApp> for TerminalView {
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::with_user_event().build()?;
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut app = TerminalView::new();
-        event_loop.run_app(&mut app)?;
-    }
+    let proxy = event_loop.create_proxy();
+
+    let mut app = TerminalView {
+        app: None,
+        window: None,
+        proxy: Some(proxy),
+    };
+
+    event_loop.run_app(&mut app)?;
 
     Ok(())
 }
