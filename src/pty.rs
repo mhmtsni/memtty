@@ -1,9 +1,7 @@
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use std::{
-    io::{Read, Write},
-    time::{Duration, Instant},
-};
+use std::io::{Read, Write};
 use tokio::sync::mpsc;
+use tokio::time::{Duration, MissedTickBehavior};
 
 pub enum PtyInput {
     Data(Vec<u8>),
@@ -32,38 +30,57 @@ pub async fn run(
     let mut writer = pair.master.take_writer()?;
     let master = pair.master;
 
+    let (tx_chunks, mut rx_chunks) = mpsc::channel::<Vec<u8>>(64);
+
     // --- Thread: Read from PTY, send to UI ---
     tokio::task::spawn_blocking(move || {
         let mut read_buf = [0u8; 1024];
-        let mut batch = Vec::with_capacity(32768);
-        let mut last_flush = Instant::now();
-        let flush_interval = Duration::from_millis(8);
-        let max_batch_size = 8192;
         loop {
             match reader.read(&mut read_buf) {
-                Ok(0) => {
-                    if !batch.is_empty() {
-                        let _ = tx_ui.blocking_send(std::mem::take(&mut batch));
-                    }
-                    break;
-                }
+                Ok(0) => break,
                 Ok(n) => {
-                    batch.extend_from_slice(&read_buf[..n]);
-
-                    let should_flush =
-                        batch.len() >= max_batch_size || last_flush.elapsed() >= flush_interval;
-
-                    if should_flush {
-                        let _ = tx_ui.blocking_send(std::mem::take(&mut batch));
-                        last_flush = Instant::now();
+                    if tx_chunks.blocking_send(read_buf[..n].to_vec()).is_err() {
+                        break;
                     }
                 }
                 Err(_) => break,
             }
+        }
+    });
 
-            if !batch.is_empty() && last_flush.elapsed() >= flush_interval {
-                let _ = tx_ui.blocking_send(std::mem::take(&mut batch));
-                last_flush = Instant::now();
+    // Batch chunks and flush periodically so output does not wait for a new read.
+    tokio::spawn(async move {
+        let mut batch = Vec::with_capacity(8192);
+        let mut ticker = tokio::time::interval(Duration::from_millis(8));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                maybe_chunk = rx_chunks.recv() => {
+                    match maybe_chunk {
+                        Some(chunk) => {
+                            batch.extend_from_slice(&chunk);
+                            if batch.len() >= 8192 {
+                                if tx_ui.send(std::mem::take(&mut batch)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        None => {
+                            if !batch.is_empty() {
+                                let _ = tx_ui.send(std::mem::take(&mut batch)).await;
+                            }
+                            break;
+                        }
+                    }
+                }
+                _ = ticker.tick() => {
+                    if !batch.is_empty() {
+                        if tx_ui.send(std::mem::take(&mut batch)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
             }
         }
     });

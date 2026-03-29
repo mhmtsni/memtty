@@ -29,7 +29,7 @@ pub struct MyApp {
 
 impl MyApp {
     pub fn new(window: Arc<Window>, tx_to_pty: Sender<PtyInput>, renderer: Renderer) -> Self {
-        Self {
+        let mut app = Self {
             full_screen: false,
             tx: Some(tx_to_pty),
             terminal: Terminal::new(),
@@ -37,7 +37,15 @@ impl MyApp {
             window,
             modifiers: ModifiersState::empty(),
             renderer,
-        }
+        };
+
+        app.sync_renderer_from_terminal();
+        app
+    }
+
+    pub fn sync_renderer_from_terminal(&mut self) {
+        let text = self.terminal.visible_text(self.scroll_offset);
+        self.renderer.set_text(&text);
     }
 
     fn send_to_pty(&mut self, data: PtyInput) {
@@ -63,6 +71,7 @@ impl MyApp {
         let max_offset = self.terminal.performer.scrollback.len() as i32;
         self.scroll_offset = (self.scroll_offset - scroll_amount).max(0).min(max_offset);
         self.terminal.performer.cursor_visible = self.scroll_offset == 0;
+        self.sync_renderer_from_terminal();
     }
 
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
@@ -80,6 +89,10 @@ impl MyApp {
             cols: new_cols,
             rows: new_rows,
         });
+
+        let max_offset = self.terminal.performer.scrollback.len() as i32;
+        self.scroll_offset = self.scroll_offset.min(max_offset).max(0);
+        self.sync_renderer_from_terminal();
     }
 
     pub fn handle_key_event(&mut self, event: KeyEvent) {

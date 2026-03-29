@@ -18,6 +18,7 @@ pub struct TerminalView {
     pub device: Option<wgpu::Device>,
     pub queue: Option<wgpu::Queue>,
     pub config: Option<wgpu::SurfaceConfiguration>,
+    pub terminal_dirty: bool,
 }
 
 impl ApplicationHandler<Message> for TerminalView {
@@ -96,6 +97,7 @@ impl ApplicationHandler<Message> for TerminalView {
         self.device = Some(device);
         self.queue = Some(queue);
         self.config = Some(config);
+        self.terminal_dirty = true;
 
         window.request_redraw();
     }
@@ -109,6 +111,7 @@ impl ApplicationHandler<Message> for TerminalView {
         match event {
             Message::PtyDataReceived(data) => {
                 app.terminal.process(&data);
+                self.terminal_dirty = true;
             }
             Message::PtyExited => {
                 std::process::exit(0);
@@ -135,6 +138,11 @@ impl ApplicationHandler<Message> for TerminalView {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => {
+                if self.terminal_dirty {
+                    state.sync_renderer_from_terminal();
+                    self.terminal_dirty = false;
+                }
+
                 let surface = self.surface.as_ref().unwrap();
                 let device = self.device.as_ref().unwrap();
                 let queue = self.queue.as_ref().unwrap();
@@ -177,6 +185,7 @@ impl ApplicationHandler<Message> for TerminalView {
                         surface.configure(device, config);
                     }
                     state.renderer.resize(size.width, size.height);
+                    state.sync_renderer_from_terminal();
                 }
                 should_redraw = true;
             }
@@ -214,6 +223,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         device: None,
         queue: None,
         config: None,
+        terminal_dirty: false,
     };
 
     event_loop.run_app(&mut app)?;

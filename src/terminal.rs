@@ -97,6 +97,45 @@ impl Terminal {
         self.buffer.push_str(&self.performer.buffer);
         self.performer.buffer.clear();
     }
+
+    pub fn visible_text(&self, scroll_offset: i32) -> String {
+        let rows = self.performer.rows;
+        if rows == 0 {
+            return String::new();
+        }
+
+        let scrollback_len = self.performer.scrollback.len();
+        let grid_len = self.performer.grid.len();
+        let total_rows = scrollback_len + grid_len;
+        if total_rows == 0 {
+            return String::new();
+        }
+
+        let offset = scroll_offset.max(0) as usize;
+        let end = total_rows.saturating_sub(offset);
+        let start = end.saturating_sub(rows);
+
+        let mut out = String::new();
+        for idx in start..end {
+            let row = if idx < scrollback_len {
+                &self.performer.scrollback[idx]
+            } else {
+                &self.performer.grid[idx - scrollback_len]
+            };
+
+            let mut line: String = row.iter().map(|cell| cell.c).collect();
+            while line.ends_with(' ') {
+                line.pop();
+            }
+
+            out.push_str(&line);
+            if idx + 1 < end {
+                out.push('\n');
+            }
+        }
+
+        out
+    }
 }
 
 impl Performer {

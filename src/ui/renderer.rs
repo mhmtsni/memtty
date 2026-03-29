@@ -29,7 +29,7 @@ impl Renderer {
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
 
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(16.0, 20.0));
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(20.0, 25.0));
 
         buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
 
@@ -75,6 +75,17 @@ impl Renderer {
             &mut self.font_system,
             Some(width as f32),
             Some(height as f32),
+        );
+        self.buffer.shape_until_scroll(&mut self.font_system, true);
+    }
+
+    pub fn set_text(&mut self, text: &str) {
+        self.buffer.set_text(
+            &mut self.font_system,
+            text,
+            &Attrs::new(),
+            Shaping::Advanced,
+            None::<glyphon::cosmic_text::Align>,
         );
         self.buffer.shape_until_scroll(&mut self.font_system, true);
     }
@@ -127,7 +138,7 @@ impl Renderer {
                 view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
