@@ -44,8 +44,10 @@ impl MyApp {
     }
 
     pub fn sync_renderer_from_terminal(&mut self) {
-        let text = self.terminal.visible_text(self.scroll_offset);
-        self.renderer.set_text(&text);
+        let rows = self
+            .terminal
+            .visible_rows(self.scroll_offset, self.renderer.visible_row_capacity());
+        self.renderer.set_cells(&rows);
     }
 
     fn send_to_pty(&mut self, data: PtyInput) {
@@ -77,9 +79,10 @@ impl MyApp {
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
         let width = size.width as f32;
         let height = size.height as f32;
+        let (cell_width, line_height) = self.renderer.cell_size();
 
-        let new_cols = (width / 8.5).max(10.0) as u16;
-        let new_rows = (height / 18.0).max(5.0) as u16;
+        let new_cols = (width / cell_width).floor().max(10.0) as u16;
+        let new_rows = (height / line_height).floor().max(5.0) as u16;
 
         self.terminal
             .performer

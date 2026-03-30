@@ -8,6 +8,10 @@ pub enum PtyInput {
     Resize { cols: u16, rows: u16 },
 }
 
+const BUFF_CAPACITY: usize = 1096;
+const BATCH_LENGTH: usize = 8192;
+const FLUSH_INTERVAL: u64 = 2;
+
 pub async fn run(
     tx_ui: mpsc::Sender<Vec<u8>>,
     mut rx_ui: mpsc::Receiver<PtyInput>, // Changed from Vec<u8> to PtyInput
@@ -34,7 +38,7 @@ pub async fn run(
 
     // --- Thread: Read from PTY, send to UI ---
     tokio::task::spawn_blocking(move || {
-        let mut read_buf = [0u8; 1024];
+        let mut read_buf = [0u8; BUFF_CAPACITY];
         loop {
             match reader.read(&mut read_buf) {
                 Ok(0) => break,
@@ -48,10 +52,9 @@ pub async fn run(
         }
     });
 
-    // Batch chunks and flush periodically so output does not wait for a new read.
     tokio::spawn(async move {
-        let mut batch = Vec::with_capacity(8192);
-        let mut ticker = tokio::time::interval(Duration::from_millis(8));
+        let mut batch = Vec::with_capacity(BATCH_LENGTH);
+        let mut ticker = tokio::time::interval(Duration::from_millis(FLUSH_INTERVAL));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {

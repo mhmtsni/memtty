@@ -164,12 +164,12 @@ impl ApplicationHandler<Message> for TerminalView {
                     label: Some("Render Encoder"),
                 });
 
-                // 🔥 DRAW TEXT
-                self.app
-                    .as_mut()
-                    .unwrap()
+                let fg_color = state.terminal.performer.current_fg;
+
+                // Draw current text frame.
+                state
                     .renderer
-                    .render(device, queue, &view, &mut encoder);
+                    .render(device, queue, &view, &mut encoder, fg_color);
 
                 queue.submit(Some(encoder.finish()));
                 frame.present();
