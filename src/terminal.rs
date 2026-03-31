@@ -7,7 +7,7 @@ const MAX_SCROLLBACK: usize = 1000;
 const ROWS: usize = 24;
 const COLS: usize = 80;
 const DEFAULT_FG: Color = Color::rgb(229, 229, 229);
-const DEFAULT_BG: Color = Color::rgb(0, 0, 0);
+const DEFAULT_BG: Color = Color::rgb(33, 38, 52);
 
 pub mod style {
     pub const BOLD: u8 = 1 << 0;
@@ -146,8 +146,8 @@ impl Default for Performer {
         let rows = ROWS;
         let cols = COLS;
         let palette_256 = default_palette_256();
-        let default_fg = palette_256[7];
-        let default_bg = palette_256[0];
+        let default_fg = DEFAULT_FG;
+        let default_bg = DEFAULT_BG;
         let default_cell = Cell {
             c: ' ',
             fg: default_fg,

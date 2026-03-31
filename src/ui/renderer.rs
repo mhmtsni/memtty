@@ -7,6 +7,12 @@ use wgpu::{Device, MultisampleState, Queue, TextureFormat};
 
 use crate::terminal::{Cell, style};
 
+mod renderer_background;
+mod renderer_cache;
+mod renderer_cursor;
+mod renderer_dirty;
+mod renderer_text;
+
 const LINE_HEIGHT_FACTOR: f32 = 1.2;
 const CELL_WIDTH_FACTOR: f32 = 0.55;
 const INITIAL_SOLID_VERTEX_CAPACITY: usize = 2048;
@@ -339,245 +345,50 @@ impl Renderer {
             _ => None,
         });
 
-        // ── Determine which rows are dirty ────────────────────────────────────
         let row_count = rows.len();
 
-        // Cursor movement dirties both the old and new cursor row so the
-        // block highlight is painted/erased correctly.
+        // Cursor movement dirties both the old and new cursor rows.
         let new_cursor_state = cursor.map(cursor_cache_key);
         let cursor_changed = new_cursor_state != self.last_cursor;
 
-        // Grow / shrink the cache to match the current row count.
+        // Grow / shrink cache to match the current row count.
         if self.last_grid.len() != row_count {
             self.full_rebuild = true;
             self.last_grid.resize(row_count, Vec::new());
         }
 
-        // Build per-row dirty flags:
-        // - content_dirty: row text/background changed
-        // - dirty: any change that can affect rendering (incl. cursor movement)
-        let mut content_dirty = vec![self.full_rebuild; row_count];
-        let mut dirty = vec![self.full_rebuild; row_count];
+        let dirty_info = renderer_dirty::compute_dirty_info(
+            self,
+            rows,
+            cursor_changed,
+            new_cursor_state,
+            content_changed_hint,
+        );
 
-        if !self.full_rebuild && !content_changed_hint {
-            for (row_i, row) in rows.iter().enumerate() {
-                // Content changed?
-                let cache = &self.last_grid[row_i];
-                if cache.len() != row.len() {
-                    content_dirty[row_i] = true;
-                    dirty[row_i] = true;
-                    continue;
-                }
-                for (cell, &key) in row.iter().zip(cache.iter()) {
-                    if CellKey::from_cell(cell) != key {
-                        content_dirty[row_i] = true;
-                        dirty[row_i] = true;
-                        break;
-                    }
-                }
-            }
-
-            // Cursor movement dirties the rows it touches
-            if cursor_changed {
-                if let Some(old) = self.last_cursor {
-                    let old_row = old.row;
-                    if old_row < row_count {
-                        dirty[old_row] = true;
-                    }
-                }
-                if let Some(new_cursor) = new_cursor_state {
-                    let new_row = new_cursor.row;
-                    if new_row < row_count {
-                        dirty[new_row] = true;
-                    }
-                }
-            }
-        } else if !self.full_rebuild && content_changed_hint {
-            content_dirty.fill(true);
-            dirty.fill(true);
-        }
-
-        let any_dirty = dirty.iter().any(|&d| d);
-        if !any_dirty {
+        if !dirty_info.any_dirty {
             return;
         }
 
-        let any_content_dirty = content_dirty.iter().any(|&d| d);
-        let prev_block_cursor_visible = self
-            .last_cursor
-            .map(|c| c.style == CURSOR_STYLE_BLOCK && c.blink_on)
-            .unwrap_or(false);
-        let new_block_cursor_visible = new_cursor_state
-            .map(|c| c.style == CURSOR_STYLE_BLOCK && c.blink_on)
-            .unwrap_or(false);
-        // Block cursor inverts glyph color under cursor, so both old/new block
-        // states require text rebuild even if cell content did not change.
-        let cursor_affects_text = prev_block_cursor_visible || new_block_cursor_visible;
-        let needs_text_rebuild = any_content_dirty || (cursor_changed && cursor_affects_text);
-
-        if any_content_dirty || self.background_vertex_count == 0 {
-            self.solid_vertices.clear();
-            for (row_i, row) in rows.iter().enumerate() {
-                if row.is_empty() {
-                    continue;
-                }
-                let mut run_start = 0usize;
-                let mut run_bg = effective_colors(&row[0]).1;
-                for col in 1..=row.len() {
-                    let next_bg = if col < row.len() {
-                        effective_colors(&row[col]).1
-                    } else {
-                        Color::rgb(0, 0, 0)
-                    };
-                    if col == row.len() || next_bg.0 != run_bg.0 {
-                        // Skip default black background runs; clear pass already paints black.
-                        if run_bg.0 != Color::rgb(0, 0, 0).0 {
-                            self.push_rect_cells(run_start, row_i, col - run_start, 1, run_bg, 1.0);
-                        }
-                        run_start = col;
-                        run_bg = next_bg;
-                    }
-                }
-            }
-            self.background_vertex_count = self.solid_vertices.len();
+        // ── Background geometry ──────────────────────────────────────────────
+        let rebuild_background = dirty_info.any_content_dirty || self.background_vertex_count == 0;
+        if rebuild_background {
+            renderer_background::rebuild_background_geometry(self, rows);
         } else if self.solid_vertices.len() > self.background_vertex_count {
+            // Drop old cursor overlay vertices, keep the background vertices.
             self.solid_vertices.truncate(self.background_vertex_count);
         }
 
-        if needs_text_rebuild {
-            // ── Rebuild text spans ────────────────────────────────────────────
-            for (s, _) in self.spans_cache.iter_mut() {
-                s.clear();
-            }
-            let mut span_count = 0;
-
-            for (row_i, row) in rows.iter().enumerate() {
-                let last_non_space = row
-                    .iter()
-                    .rposition(|c| c.c != ' ')
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-
-                for (col_i, cell) in row[..last_non_space].iter().enumerate() {
-                    let (mut fg, _bg) = effective_colors(cell);
-
-                    if let Some((cursor_col, cursor_row, cursor_color)) = cursor_block_cell {
-                        if cursor_row == row_i && cursor_col == col_i {
-                            fg = contrast_text_color(cursor_color);
-                        }
-                    }
-
-                    let attrs = build_attrs(cell, fg, self.font_family_name);
-
-                    if span_count > 0 && attrs_equal(&self.spans_cache[span_count - 1].1, &attrs) {
-                        self.spans_cache[span_count - 1].0.push(cell.c);
-                    } else {
-                        if span_count < self.spans_cache.len() {
-                            self.spans_cache[span_count].0.clear();
-                            self.spans_cache[span_count].0.push(cell.c);
-                            self.spans_cache[span_count].1 = attrs;
-                        } else {
-                            self.spans_cache.push((cell.c.to_string(), attrs));
-                        }
-                        span_count += 1;
-                    }
-                }
-
-                if row_i + 1 < row_count {
-                    if span_count > 0 {
-                        self.spans_cache[span_count - 1].0.push('\n');
-                    } else {
-                        if span_count < self.spans_cache.len() {
-                            self.spans_cache[span_count].0.clear();
-                            self.spans_cache[span_count].0.push('\n');
-                            self.spans_cache[span_count].1 = Attrs::new()
-                                .family(font_family(self.font_family_name))
-                                .color(Color::rgb(255, 255, 255));
-                        } else {
-                            self.spans_cache.push((
-                                "\n".to_string(),
-                                Attrs::new()
-                                    .family(font_family(self.font_family_name))
-                                    .color(Color::rgb(255, 255, 255)),
-                            ));
-                        }
-                        span_count += 1;
-                    }
-                }
-            }
-
-            let active_spans = &self.spans_cache[..span_count];
-            self.buffer.set_rich_text(
-                &mut self.font_system,
-                active_spans.iter().map(|(s, a)| (s.as_str(), a.clone())),
-                &Attrs::new()
-                    .family(font_family(self.font_family_name))
-                    .color(Color::rgb(229, 229, 229)),
-                Shaping::Basic,
-                None::<glyphon::cosmic_text::Align>,
-            );
-            self.needs_shape = true;
+        // ── Text spans ──────────────────────────────────────────────────────
+        if dirty_info.needs_text_rebuild {
+            renderer_text::rebuild_text_spans(self, rows, cursor_block_cell);
         }
 
         // ── Cursor overlay geometry ───────────────────────────────────────────
-        if let Some(cursor) = cursor {
-            if !cursor.blink_on {
-                // blink-off: still update cache/dirty but don't draw cursor
-            } else {
-                let cursor_alpha = 1.0;
-                match cursor.style {
-                    CursorRenderStyle::Block => self.push_rect_cells(
-                        cursor.col,
-                        cursor.row,
-                        1,
-                        1,
-                        cursor.color,
-                        cursor_alpha,
-                    ),
-                    CursorRenderStyle::Underline => {
-                        let underline_height = (self.line_height * 0.12).max(2.0);
-                        self.push_rect_pixels(
-                            cursor.col as f32 * self.cell_width,
-                            (cursor.row as f32 + 1.0) * self.line_height - underline_height,
-                            self.cell_width,
-                            underline_height,
-                            cursor.color,
-                            cursor_alpha,
-                        );
-                    }
-                    CursorRenderStyle::Bar => {
-                        let bar_width = (self.cell_width * 0.12).max(2.0);
-                        self.push_rect_pixels(
-                            cursor.col as f32 * self.cell_width,
-                            cursor.row as f32 * self.line_height,
-                            bar_width,
-                            self.line_height,
-                            cursor.color,
-                            cursor_alpha,
-                        );
-                    }
-                }
-            }
-        }
+        renderer_cursor::render_cursor_overlay(self, cursor);
 
         // ── Update the cache snapshot ─────────────────────────────────────────
-        for (row_i, row) in rows.iter().enumerate() {
-            if content_dirty[row_i] {
-                let cache_row = &mut self.last_grid[row_i];
-                cache_row.resize(
-                    row.len(),
-                    CellKey {
-                        c: ' ',
-                        fg: 0,
-                        bg: 0,
-                        style: 0,
-                    },
-                );
-                for (cell, key) in row.iter().zip(cache_row.iter_mut()) {
-                    *key = CellKey::from_cell(cell);
-                }
-            }
-        }
+        renderer_cache::update_last_grid_snapshot(self, rows, &dirty_info.content_dirty);
+
         self.last_cursor = new_cursor_state;
         self.full_rebuild = false;
     }
@@ -779,9 +590,7 @@ fn effective_colors(cell: &Cell) -> (Color, Color) {
 }
 
 fn build_attrs(cell: &Cell, fg: Color, font_family_name: Option<&'static str>) -> Attrs<'static> {
-    let mut attrs = Attrs::new()
-        .family(font_family(font_family_name))
-        .color(fg);
+    let mut attrs = Attrs::new().family(font_family(font_family_name)).color(fg);
 
     if cell.style & style::BOLD != 0 {
         attrs = attrs.weight(Weight::BOLD);

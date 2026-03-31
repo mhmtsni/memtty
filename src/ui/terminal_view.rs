@@ -101,7 +101,7 @@ impl ApplicationHandler<Message> for TerminalView {
         };
 
         let multisample = wgpu::MultisampleState::default();
-        let font_size = 30.0;
+        let font_size = 25.0;
 
         surface.configure(&device, &config);
 
