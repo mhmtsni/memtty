@@ -14,7 +14,7 @@ const FLUSH_INTERVAL: u64 = 2;
 
 pub async fn run(
     tx_ui: mpsc::Sender<Vec<u8>>,
-    mut rx_ui: mpsc::Receiver<PtyInput>, // Changed from Vec<u8> to PtyInput
+    mut rx_ui: mpsc::UnboundedReceiver<PtyInput>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {
@@ -25,7 +25,13 @@ pub async fn run(
     })?;
 
     // Spawn the shell
-    pair.slave.spawn_command(CommandBuilder::new("zsh"))?;
+    let mut cmd = CommandBuilder::new("zsh");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "custom-terminal");
+    cmd.env("TERM_PROGRAM_VERSION", "0.1.0");
+
+    pair.slave.spawn_command(cmd)?;
 
     // We must drop the slave after spawning, or the master read will never EOF
     drop(pair.slave);
@@ -92,7 +98,6 @@ pub async fn run(
         match input {
             PtyInput::Data(bytes) => {
                 writer.write_all(&bytes)?;
-                writer.flush()?;
             }
             PtyInput::Resize { cols, rows } => {
                 master.resize(PtySize {

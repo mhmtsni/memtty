@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use crate::ui::{renderer::Renderer, ui::Message};
+use crate::ui::ui::Message;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::Window,
 };
 
-use crate::ui::ui::MyApp;
+use crate::ui::{renderer::Renderer, ui::MyApp};
 
 pub struct TerminalView {
     pub app: Option<MyApp>,
@@ -19,9 +19,45 @@ pub struct TerminalView {
     pub queue: Option<wgpu::Queue>,
     pub config: Option<wgpu::SurfaceConfiguration>,
     pub terminal_dirty: bool,
+    pub redraw_requested: bool,
+    pub pending_pty_data: Vec<u8>,
+}
+
+impl TerminalView {
+    fn request_redraw_if_needed(&mut self) {
+        if self.redraw_requested {
+            return;
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+            self.redraw_requested = true;
+        }
+    }
 }
 
 impl ApplicationHandler<Message> for TerminalView {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.app.is_some() {
+            let (blink_changed, blink_deadline) = {
+                let app = self.app.as_mut().expect("app checked as some");
+                let changed = app.update_cursor_blink();
+                (changed, app.next_blink_deadline())
+            };
+
+            if blink_changed {
+                self.request_redraw_if_needed();
+            }
+
+            if let Some(deadline) = blink_deadline {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            } else {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
@@ -29,8 +65,7 @@ impl ApplicationHandler<Message> for TerminalView {
                 .unwrap(),
         );
 
-        // channels
-        let (tx_to_pty, rx_from_ui) = tokio::sync::mpsc::channel(100);
+        let (tx_to_pty, rx_from_ui) = tokio::sync::mpsc::unbounded_channel();
         let (tx_to_ui, mut rx_from_pty) = tokio::sync::mpsc::channel(100);
         let instance = wgpu::Instance::default();
 
@@ -46,8 +81,13 @@ impl ApplicationHandler<Message> for TerminalView {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
 
         let size = window.inner_size();
-
-        let format = surface.get_capabilities(&adapter).formats[0];
+        let format = surface
+            .get_capabilities(&adapter)
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -61,6 +101,7 @@ impl ApplicationHandler<Message> for TerminalView {
         };
 
         let multisample = wgpu::MultisampleState::default();
+        let font_size = 30.0;
 
         surface.configure(&device, &config);
 
@@ -71,14 +112,19 @@ impl ApplicationHandler<Message> for TerminalView {
             multisample,
             size.width,
             size.height,
+            font_size,
         );
 
-        // create app
-        let app = MyApp::new(window.clone(), tx_to_pty, renderer);
+        let mut app = MyApp::new(window.clone(), tx_to_pty, renderer);
+        if let Some(family) = app.renderer.active_font_family_name() {
+            eprintln!("Using terminal font family: {family}");
+        } else {
+            eprintln!("Using terminal font family: system monospace fallback");
+        }
+        app.handle_resize(size);
 
         let proxy = self.proxy.as_ref().unwrap().clone();
 
-        // spawn PTY
         tokio::spawn(async move {
             tokio::spawn(async move {
                 let _ = crate::pty::run(tx_to_ui, rx_from_ui).await;
@@ -98,30 +144,22 @@ impl ApplicationHandler<Message> for TerminalView {
         self.queue = Some(queue);
         self.config = Some(config);
         self.terminal_dirty = true;
-
-        window.request_redraw();
+        self.request_redraw_if_needed();
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: Message) {
-        let app = match &mut self.app {
-            Some(app) => app,
-            None => return,
-        };
-
         match event {
             Message::PtyDataReceived(data) => {
-                app.terminal.process(&data);
+                self.pending_pty_data.extend_from_slice(&data);
                 self.terminal_dirty = true;
+                self.request_redraw_if_needed();
             }
             Message::PtyExited => {
                 std::process::exit(0);
             }
         }
-
-        if let Some(window) = &self.window {
-            window.request_redraw();
-        }
     }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -129,7 +167,7 @@ impl ApplicationHandler<Message> for TerminalView {
         event: WindowEvent,
     ) {
         let state = match &mut self.app {
-            Some(canvas) => canvas,
+            Some(s) => s,
             None => return,
         };
 
@@ -137,9 +175,18 @@ impl ApplicationHandler<Message> for TerminalView {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+
             WindowEvent::RedrawRequested => {
+                self.redraw_requested = false;
+
+                if !self.pending_pty_data.is_empty() {
+                    let pending = std::mem::take(&mut self.pending_pty_data);
+                    state.terminal.process(&pending);
+                    self.terminal_dirty = true;
+                }
+
                 if self.terminal_dirty {
-                    state.sync_renderer_from_terminal();
+                    state.sync_renderer_from_terminal(true);
                     self.terminal_dirty = false;
                 }
 
@@ -165,8 +212,6 @@ impl ApplicationHandler<Message> for TerminalView {
                 });
 
                 let fg_color = state.terminal.performer.current_fg;
-
-                // Draw current text frame.
                 state
                     .renderer
                     .render(device, queue, &view, &mut encoder, fg_color);
@@ -174,8 +219,8 @@ impl ApplicationHandler<Message> for TerminalView {
                 queue.submit(Some(encoder.finish()));
                 frame.present();
             }
+
             WindowEvent::Resized(size) => {
-                state.handle_resize(size);
                 if size.width > 0 && size.height > 0 {
                     if let (Some(surface), Some(device), Some(config)) =
                         (&self.surface, &self.device, &mut self.config)
@@ -184,29 +229,29 @@ impl ApplicationHandler<Message> for TerminalView {
                         config.height = size.height;
                         surface.configure(device, config);
                     }
-                    state.renderer.resize(size.width, size.height);
-                    state.sync_renderer_from_terminal();
+                    state.handle_resize(size);
                 }
                 should_redraw = true;
             }
+
             WindowEvent::ModifiersChanged(modifiers) => {
                 state.set_modifiers(modifiers.state());
             }
+
             WindowEvent::MouseWheel { delta, .. } => {
                 state.handle_mouse_wheel(delta);
                 should_redraw = true;
             }
+
             WindowEvent::KeyboardInput { event, .. } => {
                 state.handle_key_event(event);
-                should_redraw = true;
             }
+
             _ => {}
         }
 
         if should_redraw {
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
+            self.request_redraw_if_needed();
         }
     }
 }
@@ -224,6 +269,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         queue: None,
         config: None,
         terminal_dirty: false,
+        redraw_requested: false,
+        pending_pty_data: Vec::new(),
     };
 
     event_loop.run_app(&mut app)?;

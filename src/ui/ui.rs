@@ -1,7 +1,7 @@
 use std::{fmt::Debug, sync::Arc};
 
 use arboard::Clipboard;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::UnboundedSender;
 use winit::{
     dpi::PhysicalSize,
     event::{ElementState, KeyEvent, MouseScrollDelta},
@@ -9,7 +9,11 @@ use winit::{
     window::{Fullscreen, Window},
 };
 
-use crate::{pty::PtyInput, terminal::Terminal, ui::renderer::Renderer};
+use crate::{
+    pty::PtyInput,
+    terminal::{CursorStyle, Terminal},
+    ui::renderer::{CursorRenderInfo, CursorRenderStyle, Renderer},
+};
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -17,18 +21,28 @@ pub enum Message {
     PtyExited,
 }
 
+use std::time::{Duration, Instant};
+
+const CURSOR_COLOR: glyphon::Color = glyphon::Color::rgb(229, 229, 229);
+
 pub struct MyApp {
     window: Arc<Window>,
-    tx: Option<mpsc::Sender<PtyInput>>,
+    tx: Option<UnboundedSender<PtyInput>>,
     pub terminal: Terminal,
     pub scroll_offset: i32,
     full_screen: bool,
     modifiers: ModifiersState,
     pub renderer: Renderer,
+    cursor_blink_on: bool,
+    last_blink: Instant,
 }
 
 impl MyApp {
-    pub fn new(window: Arc<Window>, tx_to_pty: Sender<PtyInput>, renderer: Renderer) -> Self {
+    pub fn new(
+        window: Arc<Window>,
+        tx_to_pty: UnboundedSender<PtyInput>,
+        renderer: Renderer,
+    ) -> Self {
         let mut app = Self {
             full_screen: false,
             tx: Some(tx_to_pty),
@@ -37,22 +51,70 @@ impl MyApp {
             window,
             modifiers: ModifiersState::empty(),
             renderer,
+            cursor_blink_on: true,
+            last_blink: std::time::Instant::now(),
         };
 
-        app.sync_renderer_from_terminal();
+        app.sync_renderer_from_terminal(true);
         app
     }
 
-    pub fn sync_renderer_from_terminal(&mut self) {
-        let rows = self
-            .terminal
-            .visible_rows(self.scroll_offset, self.renderer.visible_row_capacity());
-        self.renderer.set_cells(&rows);
+    pub fn sync_renderer_from_terminal(&mut self, content_changed: bool) {
+        let visible_rows = self.renderer.visible_row_capacity();
+        let rows = self.terminal.visible_rows(self.scroll_offset, visible_rows);
+
+        let cursor = self.visible_cursor_info(visible_rows, rows.len());
+        self.renderer.set_cells(&rows, cursor, content_changed);
+    }
+
+    fn visible_cursor_info(
+        &self,
+        requested_visible_rows: usize,
+        actual_visible_rows: usize,
+    ) -> Option<CursorRenderInfo> {
+        if !self.terminal.performer.cursor_visible || self.scroll_offset != 0 {
+            return None;
+        }
+
+        let scrollback_len = self.terminal.performer.scrollback.len();
+        let grid_len = self.terminal.performer.grid.len();
+        let total_rows = scrollback_len + grid_len;
+        if total_rows == 0 {
+            return None;
+        }
+
+        let offset = self.scroll_offset.max(0) as usize;
+        let end = total_rows.saturating_sub(offset);
+        let start = end.saturating_sub(requested_visible_rows);
+
+        let cursor_abs_row = scrollback_len + self.terminal.performer.cursor_y;
+        if cursor_abs_row < start || cursor_abs_row >= end {
+            return None;
+        }
+
+        let cursor_row = cursor_abs_row - start;
+        if cursor_row >= actual_visible_rows {
+            return None;
+        }
+
+        let cursor_style = match self.terminal.performer.cursor_style {
+            CursorStyle::Block => CursorRenderStyle::Block,
+            CursorStyle::Underline => CursorRenderStyle::Underline,
+            CursorStyle::Bar => CursorRenderStyle::Bar,
+        };
+
+        Some(CursorRenderInfo {
+            col: self.terminal.performer.cursor_x,
+            row: cursor_row,
+            style: cursor_style,
+            color: CURSOR_COLOR,
+            blink_on: !self.terminal.performer.cursor_blinking || self.cursor_blink_on,
+        })
     }
 
     fn send_to_pty(&mut self, data: PtyInput) {
         if let Some(tx) = &self.tx {
-            let _ = tx.try_send(data);
+            let _ = tx.send(data);
         }
     }
 
@@ -73,7 +135,7 @@ impl MyApp {
         let max_offset = self.terminal.performer.scrollback.len() as i32;
         self.scroll_offset = (self.scroll_offset - scroll_amount).max(0).min(max_offset);
         self.terminal.performer.cursor_visible = self.scroll_offset == 0;
-        self.sync_renderer_from_terminal();
+        self.sync_renderer_from_terminal(true);
     }
 
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
@@ -93,9 +155,11 @@ impl MyApp {
             rows: new_rows,
         });
 
+        self.renderer.resize(size.width, size.height);
+
         let max_offset = self.terminal.performer.scrollback.len() as i32;
         self.scroll_offset = self.scroll_offset.min(max_offset).max(0);
-        self.sync_renderer_from_terminal();
+        self.sync_renderer_from_terminal(true);
     }
 
     pub fn handle_key_event(&mut self, event: KeyEvent) {
@@ -121,18 +185,41 @@ impl MyApp {
             return;
         }
 
+        if self.modifiers.super_key() {
+            if let Key::Character(c) = &event.logical_key {
+                match c.to_lowercase().as_str() {
+                    "+" | "=" => {
+                        let new_size = self.renderer.font_size + 2.0;
+                        self.renderer.set_font_size(new_size);
+                        self.refit_terminal_to_renderer();
+                        return;
+                    }
+                    "-" => {
+                        let new_size = self.renderer.font_size - 2.0;
+                        self.renderer.set_font_size(new_size);
+                        self.refit_terminal_to_renderer();
+                        return;
+                    }
+                    "0" => {
+                        self.renderer.reset_font_size();
+                        self.refit_terminal_to_renderer();
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+        }
+
         if let Some(bytes) = self.map_key_to_bytes(&event) {
             self.send_to_pty(PtyInput::Data(bytes));
-            self.scroll_offset = 0;
-            self.terminal.performer.cursor_visible = true;
+            self.reset_scrollback_view();
             return;
         }
 
         if let Some(text) = event.text.as_ref() {
             if !text.is_empty() {
                 self.send_to_pty(PtyInput::Data(text.as_bytes().to_vec()));
-                self.scroll_offset = 0;
-                self.terminal.performer.cursor_visible = true;
+                self.reset_scrollback_view();
             }
         }
     }
@@ -158,11 +245,10 @@ impl MyApp {
         data.extend_from_slice(b"\x1b[201~");
 
         self.send_to_pty(PtyInput::Data(data));
-        self.scroll_offset = 0;
-        self.terminal.performer.cursor_visible = true;
+        self.reset_scrollback_view();
     }
 
-    fn map_key_to_bytes(&self, event: &KeyEvent) -> Option<Vec<u8>> {
+    fn map_key_to_bytes(&mut self, event: &KeyEvent) -> Option<Vec<u8>> {
         let key = &event.logical_key;
 
         match key {
@@ -213,6 +299,7 @@ impl MyApp {
                 "]" => Some(b"\x1d".to_vec()),
                 _ => None,
             },
+
             Key::Named(NamedKey::Backspace) if self.modifiers.super_key() => Some(b"\x15".to_vec()),
             Key::Named(NamedKey::Tab) if self.modifiers.shift_key() => Some(b"\x1b[Z".to_vec()),
             Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
@@ -242,6 +329,51 @@ impl MyApp {
             Key::Named(NamedKey::F11) => Some(b"\x1b[23~".to_vec()),
             Key::Named(NamedKey::F12) => Some(b"\x1b[24~".to_vec()),
             _ => None,
+        }
+    }
+
+    fn refit_terminal_to_renderer(&mut self) {
+        let (cell_width, line_height) = self.renderer.cell_size();
+        let new_cols = (self.renderer.width as f32 / cell_width).floor().max(10.0) as u16;
+        let new_rows = (self.renderer.height as f32 / line_height).floor().max(5.0) as u16;
+
+        self.terminal
+            .performer
+            .resize(new_cols as usize, new_rows as usize);
+
+        self.send_to_pty(PtyInput::Resize {
+            cols: new_cols,
+            rows: new_rows,
+        });
+
+        let max_offset = self.terminal.performer.scrollback.len() as i32;
+        self.scroll_offset = self.scroll_offset.min(max_offset).max(0);
+        self.sync_renderer_from_terminal(true);
+    }
+
+    fn reset_scrollback_view(&mut self) {
+        self.scroll_offset = 0;
+        self.terminal.performer.cursor_visible = true;
+    }
+    pub fn update_cursor_blink(&mut self) -> bool {
+        let blink_interval = std::time::Duration::from_millis(500);
+        let now = std::time::Instant::now();
+        if self.terminal.performer.cursor_blinking
+            && now.duration_since(self.last_blink) >= blink_interval
+        {
+            self.cursor_blink_on = !self.cursor_blink_on;
+            self.last_blink = now;
+            self.sync_renderer_from_terminal(false);
+            return true;
+        }
+        false
+    }
+
+    pub fn next_blink_deadline(&self) -> Option<Instant> {
+        if self.terminal.performer.cursor_blinking && self.terminal.performer.cursor_visible {
+            Some(self.last_blink + Duration::from_millis(500))
+        } else {
+            None
         }
     }
 }
