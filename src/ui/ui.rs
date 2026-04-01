@@ -5,6 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use winit::{
     dpi::PhysicalSize,
     event::{ElementState, KeyEvent, MouseScrollDelta},
+    event_loop::EventLoopProxy,
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Fullscreen, Window},
 };
@@ -12,23 +13,33 @@ use winit::{
 use crate::{
     pty::PtyInput,
     terminal::{CursorStyle, Terminal},
-    ui::renderer::{CursorRenderInfo, CursorRenderStyle, Renderer},
+    ui::{
+        renderer::{CursorRenderInfo, CursorRenderStyle, Renderer},
+        terminal_view::spawn_pty_for_tab,
+    },
 };
 
 #[derive(Clone, Debug)]
 pub enum Message {
-    PtyDataReceived(Vec<u8>),
-    PtyExited,
+    PtyDataReceived(usize, Vec<u8>),
+    PtyExited(usize),
+    Exit,
 }
 
 use std::time::{Duration, Instant};
 
 const CURSOR_COLOR: glyphon::Color = glyphon::Color::rgb(255, 255, 255);
 
+pub struct Tab {
+    pub id: usize,
+    pub terminal: Terminal,
+    tx: Option<UnboundedSender<PtyInput>>,
+}
+
 pub struct MyApp {
     window: Arc<Window>,
-    tx: Option<UnboundedSender<PtyInput>>,
-    pub terminal: Terminal,
+    pub tabs: Vec<Tab>,
+    pub active_tab: usize,
     pub scroll_offset: i32,
     full_screen: bool,
     modifiers: ModifiersState,
@@ -39,8 +50,56 @@ pub struct MyApp {
 }
 
 impl MyApp {
+    fn normalize_active_tab(&mut self) -> Option<usize> {
+        if self.tabs.is_empty() {
+            return None;
+        }
+
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+
+        Some(self.active_tab)
+    }
+
     fn cursor_blink_active(&self) -> bool {
-        self.terminal.performer.cursor_blinking || !self.has_focus
+        self.tabs
+            .get(self.active_tab)
+            .map(|tab| tab.terminal.performer.cursor_blinking)
+            .unwrap_or(false)
+            || !self.has_focus
+    }
+
+    fn next_tab_id(&self) -> usize {
+        self.tabs
+            .iter()
+            .map(|t| t.id)
+            .max()
+            .map(|id| id + 1)
+            .unwrap_or(0)
+    }
+
+    fn close_active_tab(&mut self) -> bool {
+        if self.tabs.len() <= 1 {
+            return false;
+        }
+
+        let Some(active_tab) = self.normalize_active_tab() else {
+            return false;
+        };
+
+        let mut removed = self.tabs.remove(active_tab);
+        if let Some(tx) = removed.tx.take() {
+            let _ = tx.send(PtyInput::Shutdown);
+        }
+
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+
+        self.reset_scrollback_view();
+        self.sync_renderer_from_terminal(true);
+        true
     }
 
     pub fn new(
@@ -50,8 +109,12 @@ impl MyApp {
     ) -> Self {
         let mut app = Self {
             full_screen: false,
-            tx: Some(tx_to_pty),
-            terminal: Terminal::new(),
+            tabs: vec![Tab {
+                id: 0,
+                terminal: Terminal::new(),
+                tx: Some(tx_to_pty),
+            }],
+            active_tab: 0,
             scroll_offset: 0,
             window,
             modifiers: ModifiersState::empty(),
@@ -66,8 +129,15 @@ impl MyApp {
     }
 
     pub fn sync_renderer_from_terminal(&mut self, content_changed: bool) {
+        let Some(active_tab) = self.normalize_active_tab() else {
+            self.renderer.set_cells(&[], None, content_changed);
+            return;
+        };
+
         let visible_rows = self.renderer.visible_row_capacity();
-        let rows = self.terminal.visible_rows(self.scroll_offset, visible_rows);
+        let rows = self.tabs[active_tab]
+            .terminal
+            .visible_rows(self.scroll_offset, visible_rows);
 
         let cursor = self.visible_cursor_info(visible_rows, rows.len());
         self.renderer.set_cells(&rows, cursor, content_changed);
@@ -78,12 +148,14 @@ impl MyApp {
         requested_visible_rows: usize,
         actual_visible_rows: usize,
     ) -> Option<CursorRenderInfo> {
-        if !self.terminal.performer.cursor_visible || self.scroll_offset != 0 {
+        let tab = self.tabs.get(self.active_tab)?;
+
+        if !tab.terminal.performer.cursor_visible || self.scroll_offset != 0 {
             return None;
         }
 
-        let scrollback_len = self.terminal.performer.scrollback.len();
-        let grid_len = self.terminal.performer.grid.len();
+        let scrollback_len = tab.terminal.performer.scrollback.len();
+        let grid_len = tab.terminal.performer.grid.len();
         let total_rows = scrollback_len + grid_len;
         if total_rows == 0 {
             return None;
@@ -93,7 +165,7 @@ impl MyApp {
         let end = total_rows.saturating_sub(offset);
         let start = end.saturating_sub(requested_visible_rows);
 
-        let cursor_abs_row = scrollback_len + self.terminal.performer.cursor_y;
+        let cursor_abs_row = scrollback_len + tab.terminal.performer.cursor_y;
         if cursor_abs_row < start || cursor_abs_row >= end {
             return None;
         }
@@ -103,14 +175,14 @@ impl MyApp {
             return None;
         }
 
-        let cursor_style = match self.terminal.performer.cursor_style {
+        let cursor_style = match tab.terminal.performer.cursor_style {
             CursorStyle::Block => CursorRenderStyle::Block,
             CursorStyle::Underline => CursorRenderStyle::Underline,
             CursorStyle::Bar => CursorRenderStyle::Bar,
         };
 
         Some(CursorRenderInfo {
-            col: self.terminal.performer.cursor_x,
+            col: tab.terminal.performer.cursor_x,
             row: cursor_row,
             style: cursor_style,
             color: CURSOR_COLOR,
@@ -119,7 +191,12 @@ impl MyApp {
     }
 
     fn send_to_pty(&mut self, data: PtyInput) {
-        if let Some(tx) = &self.tx {
+        if self.tabs.is_empty() {
+            return;
+        }
+
+        let active_tab = self.active_tab.min(self.tabs.len() - 1);
+        if let Some(tx) = &self.tabs[active_tab].tx {
             let _ = tx.send(data);
         }
     }
@@ -129,6 +206,10 @@ impl MyApp {
     }
 
     pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        let Some(active_tab) = self.normalize_active_tab() else {
+            return;
+        };
+
         let scroll_amount = match delta {
             MouseScrollDelta::LineDelta(_, y) => y as i32,
             MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as i32,
@@ -138,13 +219,18 @@ impl MyApp {
             return;
         }
 
-        let max_offset = self.terminal.performer.scrollback.len() as i32;
+        let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
         self.scroll_offset = (self.scroll_offset + scroll_amount).max(0).min(max_offset);
-        self.terminal.performer.cursor_visible = self.scroll_offset == 0;
+        self.tabs[active_tab].terminal.performer.cursor_visible = self.scroll_offset == 0;
         self.sync_renderer_from_terminal(true);
     }
 
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
+        let Some(active_tab) = self.normalize_active_tab() else {
+            self.renderer.resize(size.width, size.height);
+            return;
+        };
+
         let width = size.width as f32;
         let height = size.height as f32;
         let (cell_width, line_height) = self.renderer.cell_size();
@@ -152,7 +238,8 @@ impl MyApp {
         let new_cols = (width / cell_width).floor().max(10.0) as u16;
         let new_rows = (height / line_height).floor().max(5.0) as u16;
 
-        self.terminal
+        self.tabs[active_tab]
+            .terminal
             .performer
             .resize(new_cols as usize, new_rows as usize);
 
@@ -163,12 +250,12 @@ impl MyApp {
 
         self.renderer.resize(size.width, size.height);
 
-        let max_offset = self.terminal.performer.scrollback.len() as i32;
+        let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
         self.scroll_offset = self.scroll_offset.min(max_offset).max(0);
         self.sync_renderer_from_terminal(true);
     }
 
-    pub fn handle_key_event(&mut self, event: KeyEvent) {
+    pub fn handle_key_event(&mut self, event: KeyEvent, proxy: Option<EventLoopProxy<Message>>) {
         if event.state != ElementState::Pressed {
             return;
         }
@@ -211,7 +298,38 @@ impl MyApp {
                         self.refit_terminal_to_renderer();
                         return;
                     }
-                    _ => return,
+                    "t" => {
+                        if let Some(proxy) = proxy.clone() {
+                            self.create_new_tab(proxy);
+                        }
+                        return;
+                    }
+                    "w" => {
+                        if !self.close_active_tab() {
+                            if let Some(proxy) = proxy {
+                                let _ = proxy.send_event(Message::Exit);
+                            }
+                        }
+                        return;
+                    }
+                    _ => {
+                        if c.len() == 1 {
+                            if let Some(ch) = c.chars().next() {
+                                if ch.is_ascii_digit() && ch != '0' {
+                                    let index = ch.to_digit(10).unwrap() as usize - 1;
+
+                                    if index < self.tabs.len() {
+                                        self.active_tab = index;
+                                        self.reset_scrollback_view();
+                                        self.sync_renderer_from_terminal(true);
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+
+                        return;
+                    }
                 }
             }
         }
@@ -339,11 +457,16 @@ impl MyApp {
     }
 
     fn refit_terminal_to_renderer(&mut self) {
+        let Some(active_tab) = self.normalize_active_tab() else {
+            return;
+        };
+
         let (cell_width, line_height) = self.renderer.cell_size();
         let new_cols = (self.renderer.width as f32 / cell_width).floor().max(10.0) as u16;
         let new_rows = (self.renderer.height as f32 / line_height).floor().max(5.0) as u16;
 
-        self.terminal
+        self.tabs[active_tab]
+            .terminal
             .performer
             .resize(new_cols as usize, new_rows as usize);
 
@@ -352,20 +475,29 @@ impl MyApp {
             rows: new_rows,
         });
 
-        let max_offset = self.terminal.performer.scrollback.len() as i32;
+        let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
         self.scroll_offset = self.scroll_offset.min(max_offset).max(0);
         self.sync_renderer_from_terminal(true);
     }
 
     fn reset_scrollback_view(&mut self) {
         self.scroll_offset = 0;
-        self.terminal.performer.cursor_visible = true;
+        if let Some(active_tab) = self.normalize_active_tab() {
+            self.tabs[active_tab].terminal.performer.cursor_visible = true;
+        }
     }
     pub fn update_cursor_blink(&mut self) -> bool {
         let blink_interval = std::time::Duration::from_millis(500);
         let now = std::time::Instant::now();
+
+        let cursor_visible = self
+            .tabs
+            .get(self.active_tab)
+            .map(|tab| tab.terminal.performer.cursor_visible)
+            .unwrap_or(false);
+
         if self.cursor_blink_active()
-            && self.terminal.performer.cursor_visible
+            && cursor_visible
             && now.duration_since(self.last_blink) >= blink_interval
         {
             self.cursor_blink_on = !self.cursor_blink_on;
@@ -377,7 +509,13 @@ impl MyApp {
     }
 
     pub fn next_blink_deadline(&self) -> Option<Instant> {
-        if self.cursor_blink_active() && self.terminal.performer.cursor_visible {
+        let cursor_visible = self
+            .tabs
+            .get(self.active_tab)
+            .map(|tab| tab.terminal.performer.cursor_visible)
+            .unwrap_or(false);
+
+        if self.cursor_blink_active() && cursor_visible {
             Some(self.last_blink + Duration::from_millis(500))
         } else {
             None
@@ -388,7 +526,11 @@ impl MyApp {
             return;
         }
 
-        let focus_reporting_enabled = self.terminal.performer.focus_reporting_enabled();
+        let focus_reporting_enabled = self
+            .tabs
+            .get(self.active_tab)
+            .map(|tab| tab.terminal.performer.focus_reporting_enabled())
+            .unwrap_or(false);
         self.has_focus = has_focus;
 
         if focus_reporting_enabled {
@@ -401,6 +543,21 @@ impl MyApp {
         }
 
         self.last_blink = std::time::Instant::now();
-        self.sync_renderer_from_terminal(false);
+        self.sync_renderer_from_terminal(true);
+    }
+    fn create_new_tab(&mut self, proxy: EventLoopProxy<Message>) {
+        let tab_id = self.next_tab_id();
+
+        let tx = spawn_pty_for_tab(tab_id, proxy);
+
+        self.tabs.push(Tab {
+            id: tab_id,
+            terminal: Terminal::new(),
+            tx: Some(tx),
+        });
+
+        self.active_tab = self.tabs.len() - 1;
+        self.handle_resize(self.window.inner_size());
+        self.sync_renderer_from_terminal(true);
     }
 }

@@ -6,11 +6,13 @@ pub(super) fn update_last_grid_snapshot(
     content_dirty: &[bool],
 ) {
     for (row_i, row) in rows.iter().enumerate() {
-        if !content_dirty[row_i] {
+        if !content_dirty.get(row_i).copied().unwrap_or(true) {
             continue;
         }
 
-        let cache_row = &mut renderer.last_grid[row_i];
+        let Some(cache_row) = renderer.last_grid.get_mut(row_i) else {
+            continue;
+        };
         cache_row.resize(
             row.len(),
             CellKey {

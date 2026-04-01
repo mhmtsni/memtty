@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use crate::ui::ui::Message;
+use crate::{pty::PtyInput, ui::ui::Message};
+use tokio::sync::mpsc::UnboundedSender;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::{Theme, Window},
 };
@@ -61,14 +62,12 @@ impl ApplicationHandler<Message> for TerminalView {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("memo"))
+                .create_window(Window::default_attributes().with_title("terminal"))
                 .unwrap(),
         );
         window.set_maximized(true);
         window.set_theme(Some(Theme::Dark));
 
-        let (tx_to_pty, rx_from_ui) = tokio::sync::mpsc::unbounded_channel();
-        let (tx_to_ui, mut rx_from_pty) = tokio::sync::mpsc::channel(100);
         let instance = wgpu::Instance::default();
 
         let surface = instance.create_surface(window.clone()).unwrap();
@@ -117,7 +116,10 @@ impl ApplicationHandler<Message> for TerminalView {
             font_size,
         );
 
+        let tx_to_pty = spawn_pty_for_tab(0, self.proxy.as_ref().unwrap().clone());
+
         let mut app = MyApp::new(window.clone(), tx_to_pty, renderer);
+
         if let Some(family) = app.renderer.active_font_family_name() {
             eprintln!("Using terminal font family: {family}");
         } else {
@@ -127,19 +129,8 @@ impl ApplicationHandler<Message> for TerminalView {
 
         let proxy = self.proxy.as_ref().unwrap().clone();
 
-        tokio::spawn(async move {
-            tokio::spawn(async move {
-                let _ = crate::pty::run(tx_to_ui, rx_from_ui).await;
-            });
-
-            while let Some(data) = rx_from_pty.recv().await {
-                let _ = proxy.send_event(Message::PtyDataReceived(data));
-            }
-
-            let _ = proxy.send_event(Message::PtyExited);
-        });
-
         self.window = Some(window.clone());
+        self.proxy = Some(proxy);
         self.app = Some(app);
         self.surface = Some(surface);
         self.device = Some(device);
@@ -151,12 +142,32 @@ impl ApplicationHandler<Message> for TerminalView {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: Message) {
         match event {
-            Message::PtyDataReceived(data) => {
-                self.pending_pty_data.extend_from_slice(&data);
+            Message::PtyDataReceived(tab_id, data) => {
+                if let Some(app) = self.app.as_mut() {
+                    if let Some(tab) = app.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                        tab.terminal.process(&data);
+                    }
+                }
                 self.terminal_dirty = true;
                 self.request_redraw_if_needed();
             }
-            Message::PtyExited => {
+            Message::PtyExited(tab_id) => {
+                if let Some(app) = self.app.as_mut() {
+                    if let Some(idx) = app.tabs.iter().position(|tab| tab.id == tab_id) {
+                        app.tabs.remove(idx);
+                        if app.tabs.is_empty() {
+                            std::process::exit(0);
+                        }
+                        if app.active_tab >= app.tabs.len() {
+                            app.active_tab = app.tabs.len() - 1;
+                        }
+                        app.sync_renderer_from_terminal(true);
+                        self.terminal_dirty = true;
+                        self.request_redraw_if_needed();
+                    }
+                }
+            }
+            Message::Exit => {
                 std::process::exit(0);
             }
         }
@@ -183,8 +194,10 @@ impl ApplicationHandler<Message> for TerminalView {
 
                 if !self.pending_pty_data.is_empty() {
                     let pending = std::mem::take(&mut self.pending_pty_data);
-                    state.terminal.process(&pending);
-                    self.terminal_dirty = true;
+                    if let Some(tab) = state.tabs.get_mut(state.active_tab) {
+                        tab.terminal.process(&pending);
+                        self.terminal_dirty = true;
+                    }
                 }
 
                 if self.terminal_dirty {
@@ -213,7 +226,11 @@ impl ApplicationHandler<Message> for TerminalView {
                     label: Some("Render Encoder"),
                 });
 
-                let fg_color = state.terminal.performer.current_fg;
+                let fg_color = state
+                    .tabs
+                    .get(state.active_tab)
+                    .map(|tab| tab.terminal.performer.current_fg)
+                    .unwrap_or(glyphon::Color::rgb(229, 229, 229));
                 state
                     .renderer
                     .render(device, queue, &view, &mut encoder, fg_color);
@@ -246,7 +263,13 @@ impl ApplicationHandler<Message> for TerminalView {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                state.handle_key_event(event);
+                let is_pressed = event.state == ElementState::Pressed;
+
+                let proxy = self.proxy.as_ref().unwrap().clone();
+                state.handle_key_event(event, Some(proxy));
+                if is_pressed {
+                    should_redraw = true;
+                }
             }
             WindowEvent::Focused(focused) => {
                 state.update_has_focus(focused);
@@ -282,4 +305,26 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     event_loop.run_app(&mut app)?;
 
     Ok(())
+}
+
+pub fn spawn_pty_for_tab(
+    tab_id: usize,
+    proxy: EventLoopProxy<Message>,
+) -> UnboundedSender<PtyInput> {
+    let (tx_to_pty, rx_from_ui) = tokio::sync::mpsc::unbounded_channel();
+    let (tx_to_ui, mut rx_from_pty) = tokio::sync::mpsc::channel(100);
+
+    tokio::spawn(async move {
+        let proxy_for_exit = proxy.clone();
+        tokio::spawn(async move {
+            let _ = crate::pty::run(tx_to_ui, rx_from_ui).await;
+            let _ = proxy_for_exit.send_event(Message::PtyExited(tab_id));
+        });
+
+        while let Some(data) = rx_from_pty.recv().await {
+            let _ = proxy.send_event(Message::PtyDataReceived(tab_id, data));
+        }
+    });
+
+    tx_to_pty
 }

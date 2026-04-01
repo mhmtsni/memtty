@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 pub enum PtyInput {
     Data(Vec<u8>),
     Resize { cols: u16, rows: u16 },
+    Shutdown,
 }
 
 const BUFF_CAPACITY: usize = 1024;
@@ -28,7 +29,7 @@ pub async fn run(
     cmd.env("TERM_PROGRAM", "custom-terminal");
     cmd.env("TERM_PROGRAM_VERSION", "0.1.0");
 
-    pair.slave.spawn_command(cmd)?;
+    let mut child = pair.slave.spawn_command(cmd)?;
 
     // We must drop the slave after spawning, or the master read will never EOF
     drop(pair.slave);
@@ -66,8 +67,14 @@ pub async fn run(
                     pixel_height: 1,
                 })?;
             }
+            PtyInput::Shutdown => {
+                break;
+            }
         }
     }
+
+    let _ = child.kill();
+    let _ = child.wait();
 
     Ok(())
 }

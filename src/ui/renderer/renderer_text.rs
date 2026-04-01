@@ -68,7 +68,8 @@ pub(super) fn rebuild_text_spans(
         }
     }
 
-    let active_spans = &renderer.spans_cache[..span_count];
+    let active_span_count = span_count.min(renderer.spans_cache.len());
+    let active_spans = &renderer.spans_cache[..active_span_count];
     renderer.buffer.set_rich_text(
         &mut renderer.font_system,
         active_spans.iter().map(|(s, a)| (s.as_str(), a.clone())),

@@ -22,7 +22,11 @@ pub(super) fn compute_dirty_info(
 
     if !renderer.full_rebuild && !content_changed_hint {
         for (row_i, row) in rows.iter().enumerate() {
-            let cache = &renderer.last_grid[row_i];
+            let Some(cache) = renderer.last_grid.get(row_i) else {
+                content_dirty[row_i] = true;
+                dirty[row_i] = true;
+                continue;
+            };
 
             // Content changed?
             if cache.len() != row.len() {
