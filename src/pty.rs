@@ -1,16 +1,13 @@
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use tokio::sync::mpsc;
-use tokio::time::{Duration, MissedTickBehavior};
 
 pub enum PtyInput {
     Data(Vec<u8>),
     Resize { cols: u16, rows: u16 },
 }
 
-const BUFF_CAPACITY: usize = 1096;
-const BATCH_LENGTH: usize = 8192;
-const FLUSH_INTERVAL: u64 = 2;
+const BUFF_CAPACITY: usize = 1024;
 
 pub async fn run(
     tx_ui: mpsc::Sender<Vec<u8>>,
@@ -20,8 +17,8 @@ pub async fn run(
     let pair = pty_system.openpty(PtySize {
         rows: 24,
         cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
+        pixel_width: 1,
+        pixel_height: 1,
     })?;
 
     // Spawn the shell
@@ -40,8 +37,6 @@ pub async fn run(
     let mut writer = pair.master.take_writer()?;
     let master = pair.master;
 
-    let (tx_chunks, mut rx_chunks) = mpsc::channel::<Vec<u8>>(64);
-
     // --- Thread: Read from PTY, send to UI ---
     tokio::task::spawn_blocking(move || {
         let mut read_buf = [0u8; BUFF_CAPACITY];
@@ -49,47 +44,11 @@ pub async fn run(
             match reader.read(&mut read_buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if tx_chunks.blocking_send(read_buf[..n].to_vec()).is_err() {
+                    if tx_ui.blocking_send(read_buf[..n].to_vec()).is_err() {
                         break;
                     }
                 }
                 Err(_) => break,
-            }
-        }
-    });
-
-    tokio::spawn(async move {
-        let mut batch = Vec::with_capacity(BATCH_LENGTH);
-        let mut ticker = tokio::time::interval(Duration::from_millis(FLUSH_INTERVAL));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        loop {
-            tokio::select! {
-                maybe_chunk = rx_chunks.recv() => {
-                    match maybe_chunk {
-                        Some(chunk) => {
-                            batch.extend_from_slice(&chunk);
-                            if batch.len() >= 8192 {
-                                if tx_ui.send(std::mem::take(&mut batch)).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        None => {
-                            if !batch.is_empty() {
-                                let _ = tx_ui.send(std::mem::take(&mut batch)).await;
-                            }
-                            break;
-                        }
-                    }
-                }
-                _ = ticker.tick() => {
-                    if !batch.is_empty() {
-                        if tx_ui.send(std::mem::take(&mut batch)).await.is_err() {
-                            break;
-                        }
-                    }
-                }
             }
         }
     });
@@ -103,8 +62,8 @@ pub async fn run(
                 master.resize(PtySize {
                     rows,
                     cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
+                    pixel_width: 1,
+                    pixel_height: 1,
                 })?;
             }
         }

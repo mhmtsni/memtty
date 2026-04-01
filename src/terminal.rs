@@ -7,7 +7,7 @@ const MAX_SCROLLBACK: usize = 1000;
 const ROWS: usize = 24;
 const COLS: usize = 80;
 const DEFAULT_FG: Color = Color::rgb(229, 229, 229);
-const DEFAULT_BG: Color = Color::rgb(33, 38, 52);
+const DEFAULT_BG: Color = Color::rgb(20, 25, 31);
 
 pub mod style {
     pub const BOLD: u8 = 1 << 0;
@@ -121,6 +121,7 @@ pub struct Performer {
 
     // pending wrap: next print will first advance to next line
     pending_wrap: bool,
+    focus_enable: bool,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +186,7 @@ impl Default for Performer {
             g1_charset: Charset::Ascii,
             use_g1_charset: false,
             pending_wrap: false,
+            focus_enable: false,
         }
     }
 }
@@ -229,6 +231,10 @@ impl Terminal {
 // ─── Performer helpers ────────────────────────────────────────────────────────
 
 impl Performer {
+    pub fn focus_reporting_enabled(&self) -> bool {
+        self.focus_enable
+    }
+
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
         self.cols = new_cols;
         self.rows = new_rows;
@@ -485,6 +491,9 @@ impl Performer {
                     MouseMode::None
                 }
             }
+            1004 => {
+                self.focus_enable = enable;
+            }
             1049 => {
                 if enable {
                     self.save_cursor();
@@ -504,7 +513,6 @@ impl Performer {
 
 impl Perform for Performer {
     // ── printable character ───────────────────────────────────────────────────
-
     fn print(&mut self, c: char) {
         let c = self.translate_char(c);
 

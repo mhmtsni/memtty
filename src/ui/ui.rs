@@ -23,7 +23,7 @@ pub enum Message {
 
 use std::time::{Duration, Instant};
 
-const CURSOR_COLOR: glyphon::Color = glyphon::Color::rgb(229, 229, 229);
+const CURSOR_COLOR: glyphon::Color = glyphon::Color::rgb(255, 255, 255);
 
 pub struct MyApp {
     window: Arc<Window>,
@@ -35,9 +35,14 @@ pub struct MyApp {
     pub renderer: Renderer,
     cursor_blink_on: bool,
     last_blink: Instant,
+    pub has_focus: bool,
 }
 
 impl MyApp {
+    fn cursor_blink_active(&self) -> bool {
+        self.terminal.performer.cursor_blinking || !self.has_focus
+    }
+
     pub fn new(
         window: Arc<Window>,
         tx_to_pty: UnboundedSender<PtyInput>,
@@ -53,6 +58,7 @@ impl MyApp {
             renderer,
             cursor_blink_on: true,
             last_blink: std::time::Instant::now(),
+            has_focus: true,
         };
 
         app.sync_renderer_from_terminal(true);
@@ -108,7 +114,7 @@ impl MyApp {
             row: cursor_row,
             style: cursor_style,
             color: CURSOR_COLOR,
-            blink_on: !self.terminal.performer.cursor_blinking || self.cursor_blink_on,
+            blink_on: !self.cursor_blink_active() || self.cursor_blink_on,
         })
     }
 
@@ -133,7 +139,7 @@ impl MyApp {
         }
 
         let max_offset = self.terminal.performer.scrollback.len() as i32;
-        self.scroll_offset = (self.scroll_offset - scroll_amount).max(0).min(max_offset);
+        self.scroll_offset = (self.scroll_offset + scroll_amount).max(0).min(max_offset);
         self.terminal.performer.cursor_visible = self.scroll_offset == 0;
         self.sync_renderer_from_terminal(true);
     }
@@ -358,7 +364,8 @@ impl MyApp {
     pub fn update_cursor_blink(&mut self) -> bool {
         let blink_interval = std::time::Duration::from_millis(500);
         let now = std::time::Instant::now();
-        if self.terminal.performer.cursor_blinking
+        if self.cursor_blink_active()
+            && self.terminal.performer.cursor_visible
             && now.duration_since(self.last_blink) >= blink_interval
         {
             self.cursor_blink_on = !self.cursor_blink_on;
@@ -370,10 +377,30 @@ impl MyApp {
     }
 
     pub fn next_blink_deadline(&self) -> Option<Instant> {
-        if self.terminal.performer.cursor_blinking && self.terminal.performer.cursor_visible {
+        if self.cursor_blink_active() && self.terminal.performer.cursor_visible {
             Some(self.last_blink + Duration::from_millis(500))
         } else {
             None
         }
+    }
+    pub fn update_has_focus(&mut self, has_focus: bool) {
+        if self.has_focus == has_focus {
+            return;
+        }
+
+        let focus_reporting_enabled = self.terminal.performer.focus_reporting_enabled();
+        self.has_focus = has_focus;
+
+        if focus_reporting_enabled {
+            let sequence = if has_focus {
+                b"\x1b[I".to_vec()
+            } else {
+                b"\x1b[O".to_vec()
+            };
+            self.send_to_pty(PtyInput::Data(sequence));
+        }
+
+        self.last_blink = std::time::Instant::now();
+        self.sync_renderer_from_terminal(false);
     }
 }

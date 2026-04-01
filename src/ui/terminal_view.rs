@@ -5,7 +5,7 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    window::Window,
+    window::{Theme, Window},
 };
 
 use crate::ui::{renderer::Renderer, ui::MyApp};
@@ -61,9 +61,11 @@ impl ApplicationHandler<Message> for TerminalView {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("Terminal"))
+                .create_window(Window::default_attributes().with_title("memo"))
                 .unwrap(),
         );
+        window.set_maximized(true);
+        window.set_theme(Some(Theme::Dark));
 
         let (tx_to_pty, rx_from_ui) = tokio::sync::mpsc::unbounded_channel();
         let (tx_to_ui, mut rx_from_pty) = tokio::sync::mpsc::channel(100);
@@ -245,6 +247,10 @@ impl ApplicationHandler<Message> for TerminalView {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 state.handle_key_event(event);
+            }
+            WindowEvent::Focused(focused) => {
+                state.update_has_focus(focused);
+                should_redraw = true;
             }
 
             _ => {}
