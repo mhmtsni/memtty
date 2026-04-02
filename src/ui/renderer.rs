@@ -11,12 +11,16 @@ mod renderer_background;
 mod renderer_cache;
 mod renderer_cursor;
 mod renderer_dirty;
+mod renderer_tab;
 mod renderer_text;
 
 const LINE_HEIGHT_FACTOR: f32 = 1.2;
 const CELL_WIDTH_FACTOR: f32 = 0.55;
 const INITIAL_SOLID_VERTEX_CAPACITY: usize = 2048;
 const CELL_WIDTH_SAMPLE_COUNT: usize = 32;
+pub const TAB_HEIGHT: usize = 50;
+pub const TERMINAL_PADDING_X: f32 = 8.0;
+pub const TERMINAL_PADDING_Y: f32 = 1.0;
 
 const SOLID_SHADER: &str = r#"
 struct VsOut {
@@ -46,6 +50,7 @@ pub enum CursorRenderStyle {
     Block,
     Underline,
     Bar,
+    Unfocused,
 }
 
 #[derive(Clone, Copy)]
@@ -55,6 +60,15 @@ pub struct CursorRenderInfo {
     pub style: CursorRenderStyle,
     pub color: Color,
     pub blink_on: bool,
+}
+
+pub struct TabRenderInfo {
+    pub _title: String,
+    pub active: bool,
+    pub width: usize,
+    pub height: usize,
+    pub x: usize,
+    pub y: usize,
 }
 
 #[repr(C)]
@@ -318,7 +332,26 @@ impl Renderer {
     }
 
     pub fn visible_row_capacity(&self) -> usize {
-        (self.height as f32 / self.line_height).floor().max(1.0) as usize
+        ((self.height as f32 - TAB_HEIGHT as f32 - 2.0 * TERMINAL_PADDING_Y).max(0.0)
+            / self.line_height)
+            .floor()
+            .max(1.0) as usize
+    }
+
+    pub(super) fn content_left(&self) -> f32 {
+        TERMINAL_PADDING_X
+    }
+
+    pub(super) fn content_top(&self) -> f32 {
+        TAB_HEIGHT as f32 + TERMINAL_PADDING_Y
+    }
+
+    pub(super) fn content_width(&self) -> f32 {
+        (self.width as f32 - 2.0 * TERMINAL_PADDING_X).max(0.0)
+    }
+
+    pub(super) fn content_height(&self) -> f32 {
+        (self.height as f32 - TAB_HEIGHT as f32 - 2.0 * TERMINAL_PADDING_Y).max(0.0)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -338,6 +371,7 @@ impl Renderer {
         &mut self,
         rows: &[&Vec<Cell>],
         cursor: Option<CursorRenderInfo>,
+        tabs: Option<Vec<TabRenderInfo>>,
         content_changed_hint: bool,
     ) {
         let cursor_block_cell = cursor.and_then(|c| match c.style {
@@ -386,6 +420,8 @@ impl Renderer {
         // ── Cursor overlay geometry ───────────────────────────────────────────
         renderer_cursor::render_cursor_overlay(self, cursor);
 
+        renderer_tab::render_tab_overlay(self, tabs);
+
         // ── Update the cache snapshot ─────────────────────────────────────────
         renderer_cache::update_last_grid_snapshot(self, rows, &dirty_info.content_dirty);
 
@@ -408,6 +444,10 @@ impl Renderer {
         );
 
         let prepare_once = |this: &mut Self| {
+            let content_top = this.content_top();
+            let content_left = this.content_left();
+            let content_right = content_left + this.content_width();
+            let content_bottom = content_top + this.content_height();
             this.text_renderer.prepare(
                 device,
                 queue,
@@ -416,14 +456,14 @@ impl Renderer {
                 &this.viewport,
                 vec![TextArea {
                     buffer: &this.buffer,
-                    left: 0.0,
-                    top: 0.0,
+                    left: content_left,
+                    top: content_top,
                     scale: 1.0,
                     bounds: TextBounds {
-                        left: 0,
-                        top: 0,
-                        right: this.width as i32,
-                        bottom: this.height as i32,
+                        left: content_left as i32,
+                        top: content_top as i32,
+                        right: content_right as i32,
+                        bottom: content_bottom as i32,
                     },
                     default_color: fg_color,
                     custom_glyphs: &[],
@@ -530,8 +570,8 @@ impl Renderer {
             return;
         }
         self.push_rect_pixels(
-            col as f32 * self.cell_width,
-            row as f32 * self.line_height,
+            col as f32 * self.cell_width + self.content_left(),
+            row as f32 * self.line_height + self.content_top(),
             col_span as f32 * self.cell_width,
             row_span as f32 * self.line_height,
             color,
@@ -691,6 +731,7 @@ fn cursor_cache_key(cursor: CursorRenderInfo) -> CursorCacheKey {
         CursorRenderStyle::Block => 0,
         CursorRenderStyle::Underline => 1,
         CursorRenderStyle::Bar => 2,
+        CursorRenderStyle::Unfocused => 3,
     };
 
     CursorCacheKey {

@@ -286,8 +286,12 @@ impl Performer {
     /// lines appear at the bottom of the region).
     fn scroll_up_region(&mut self, n: usize) {
         for _ in 0..n {
-            // Only push to scrollback when the region covers the top of the screen
-            if self.scroll_top == 0 {
+            // Fast path: full-screen scroll can use pop_front/push_back and append
+            // into scrollback.
+            let full_screen_region =
+                self.scroll_top == 0 && self.scroll_bottom + 1 >= self.grid.len();
+
+            if full_screen_region {
                 if let Some(old_row) = self.grid.pop_front() {
                     self.scrollback.push_back(old_row);
                     if self.scrollback.len() > MAX_SCROLLBACK {
@@ -297,10 +301,6 @@ impl Performer {
                 } else {
                     continue;
                 }
-                // Now remove the row that fell into the region's bottom from the
-                // right place if scroll_bottom < rows-1 – handled generically below,
-                // but because pop_front already shifts everything, the generic path
-                // would double-shift. For full-screen regions we're done.
             } else {
                 // Generic: remove top row of region, insert blank at bottom.
                 if self.scroll_top < self.grid.len() {
@@ -1483,6 +1483,21 @@ mod tests {
         // Cursor should home
         assert_eq!(t.performer.cursor_y, 0);
         assert_eq!(t.performer.cursor_x, 0);
+    }
+
+    #[test]
+    fn test_partial_top_anchored_scroll_region_does_not_shift_rows_below_region() {
+        let mut t = term();
+
+        // Put a marker below the scroll region (row 11, 1-based).
+        t.process(b"\x1b[11;1HZ");
+
+        // Scroll only rows 1..10.
+        t.process(b"\x1b[1;10r");
+        t.process(b"\x1b[10;1H\n");
+
+        // Row 11 should remain untouched by scrolling inside rows 1..10.
+        assert_eq!(t.performer.grid[10][0].c, 'Z');
     }
 
     #[test]

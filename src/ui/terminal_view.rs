@@ -21,7 +21,6 @@ pub struct TerminalView {
     pub config: Option<wgpu::SurfaceConfiguration>,
     pub terminal_dirty: bool,
     pub redraw_requested: bool,
-    pub pending_pty_data: Vec<u8>,
 }
 
 impl TerminalView {
@@ -161,7 +160,6 @@ impl ApplicationHandler<Message> for TerminalView {
                         if app.active_tab >= app.tabs.len() {
                             app.active_tab = app.tabs.len() - 1;
                         }
-                        app.sync_renderer_from_terminal(true);
                         self.terminal_dirty = true;
                         self.request_redraw_if_needed();
                     }
@@ -192,16 +190,8 @@ impl ApplicationHandler<Message> for TerminalView {
             WindowEvent::RedrawRequested => {
                 self.redraw_requested = false;
 
-                if !self.pending_pty_data.is_empty() {
-                    let pending = std::mem::take(&mut self.pending_pty_data);
-                    if let Some(tab) = state.tabs.get_mut(state.active_tab) {
-                        tab.terminal.process(&pending);
-                        self.terminal_dirty = true;
-                    }
-                }
-
                 if self.terminal_dirty {
-                    state.sync_renderer_from_terminal(true);
+                    state.sync_renderer_from_terminal(false);
                     self.terminal_dirty = false;
                 }
 
@@ -299,7 +289,6 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         config: None,
         terminal_dirty: false,
         redraw_requested: false,
-        pending_pty_data: Vec::new(),
     };
 
     event_loop.run_app(&mut app)?;

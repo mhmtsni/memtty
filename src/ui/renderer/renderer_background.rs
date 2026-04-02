@@ -6,6 +6,21 @@ pub(super) fn rebuild_background_geometry(
 ) {
     renderer.solid_vertices.clear();
 
+    let base_bg = rows
+        .iter()
+        .find_map(|row| row.first().map(|cell| effective_colors(cell).1))
+        .unwrap_or(super::Color::rgb(20, 25, 31));
+
+    // Fill the full panel under tabs so all padding/margins match terminal background.
+    renderer.push_rect_pixels(
+        0.0,
+        super::TAB_HEIGHT as f32,
+        renderer.width as f32,
+        (renderer.height as f32 - super::TAB_HEIGHT as f32).max(0.0),
+        base_bg,
+        1.0,
+    );
+
     for (row_i, row) in rows.iter().enumerate() {
         if row.is_empty() {
             continue;
@@ -22,8 +37,7 @@ pub(super) fn rebuild_background_geometry(
             };
 
             if col == row.len() || next_bg.0 != run_bg.0 {
-                // Background pass already clears to black, so skip pure-black runs.
-                if run_bg.0 != super::Color::rgb(0, 0, 0).0 {
+                if run_bg.0 != base_bg.0 {
                     renderer.push_rect_cells(run_start, row_i, col - run_start, 1, run_bg, 1.0);
                 }
                 run_start = col;

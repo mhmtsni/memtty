@@ -14,7 +14,10 @@ use crate::{
     pty::PtyInput,
     terminal::{CursorStyle, Terminal},
     ui::{
-        renderer::{CursorRenderInfo, CursorRenderStyle, Renderer},
+        renderer::{
+            CursorRenderInfo, CursorRenderStyle, Renderer, TAB_HEIGHT, TERMINAL_PADDING_X,
+            TERMINAL_PADDING_Y, TabRenderInfo,
+        },
         terminal_view::spawn_pty_for_tab,
     },
 };
@@ -63,11 +66,14 @@ impl MyApp {
     }
 
     fn cursor_blink_active(&self) -> bool {
+        if !self.has_focus {
+            return false;
+        }
+
         self.tabs
             .get(self.active_tab)
             .map(|tab| tab.terminal.performer.cursor_blinking)
             .unwrap_or(false)
-            || !self.has_focus
     }
 
     fn next_tab_id(&self) -> usize {
@@ -102,6 +108,29 @@ impl MyApp {
         true
     }
 
+    fn cursor_render_visible(&self) -> bool {
+        self.tabs
+            .get(self.active_tab)
+            .map(|tab| tab.terminal.performer.cursor_visible)
+            .unwrap_or(false)
+            && self.scroll_offset == 0
+    }
+
+    fn resize_all_tabs(&mut self, new_cols: u16, new_rows: u16) {
+        let cols = new_cols as usize;
+        let rows = new_rows as usize;
+
+        for tab in &mut self.tabs {
+            tab.terminal.performer.resize(cols, rows);
+            if let Some(tx) = &tab.tx {
+                let _ = tx.send(PtyInput::Resize {
+                    cols: new_cols,
+                    rows: new_rows,
+                });
+            }
+        }
+    }
+
     pub fn new(
         window: Arc<Window>,
         tx_to_pty: UnboundedSender<PtyInput>,
@@ -129,8 +158,9 @@ impl MyApp {
     }
 
     pub fn sync_renderer_from_terminal(&mut self, content_changed: bool) {
+        let tabs = self.visible_tab_info(self.tabs.len());
         let Some(active_tab) = self.normalize_active_tab() else {
-            self.renderer.set_cells(&[], None, content_changed);
+            self.renderer.set_cells(&[], None, tabs, content_changed);
             return;
         };
 
@@ -140,7 +170,37 @@ impl MyApp {
             .visible_rows(self.scroll_offset, visible_rows);
 
         let cursor = self.visible_cursor_info(visible_rows, rows.len());
-        self.renderer.set_cells(&rows, cursor, content_changed);
+
+        self.renderer
+            .set_cells(&rows, cursor, tabs, content_changed);
+    }
+
+    fn visible_tab_info(&self, tab_count: usize) -> Option<Vec<TabRenderInfo>> {
+        if tab_count == 0 || self.active_tab >= tab_count {
+            return None;
+        }
+
+        let tab_index = self.active_tab;
+        let tab_id = self.tabs.get(tab_index)?.id;
+
+        let tab_width = self.renderer.width as f32 / tab_count as f32;
+
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| {
+                let title = format!("Tab {}", tab.id);
+                TabRenderInfo {
+                    _title: title,
+                    x: (i as f32 * tab_width).round() as usize,
+                    y: 0,
+                    width: tab_width.round() as usize,
+                    height: TAB_HEIGHT,
+                    active: tab.id == tab_id,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into()
     }
 
     fn visible_cursor_info(
@@ -150,7 +210,7 @@ impl MyApp {
     ) -> Option<CursorRenderInfo> {
         let tab = self.tabs.get(self.active_tab)?;
 
-        if !tab.terminal.performer.cursor_visible || self.scroll_offset != 0 {
+        if !self.cursor_render_visible() {
             return None;
         }
 
@@ -175,10 +235,20 @@ impl MyApp {
             return None;
         }
 
-        let cursor_style = match tab.terminal.performer.cursor_style {
-            CursorStyle::Block => CursorRenderStyle::Block,
-            CursorStyle::Underline => CursorRenderStyle::Underline,
-            CursorStyle::Bar => CursorRenderStyle::Bar,
+        let cursor_style = if self.has_focus {
+            match tab.terminal.performer.cursor_style {
+                CursorStyle::Block => CursorRenderStyle::Block,
+                CursorStyle::Underline => CursorRenderStyle::Underline,
+                CursorStyle::Bar => CursorRenderStyle::Bar,
+            }
+        } else {
+            CursorRenderStyle::Unfocused
+        };
+
+        let blink_on = if self.has_focus {
+            !self.cursor_blink_active() || self.cursor_blink_on
+        } else {
+            true
         };
 
         Some(CursorRenderInfo {
@@ -186,7 +256,7 @@ impl MyApp {
             row: cursor_row,
             style: cursor_style,
             color: CURSOR_COLOR,
-            blink_on: !self.cursor_blink_active() || self.cursor_blink_on,
+            blink_on,
         })
     }
 
@@ -221,8 +291,7 @@ impl MyApp {
 
         let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
         self.scroll_offset = (self.scroll_offset + scroll_amount).max(0).min(max_offset);
-        self.tabs[active_tab].terminal.performer.cursor_visible = self.scroll_offset == 0;
-        self.sync_renderer_from_terminal(true);
+        self.sync_renderer_from_terminal(false);
     }
 
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
@@ -234,19 +303,13 @@ impl MyApp {
         let width = size.width as f32;
         let height = size.height as f32;
         let (cell_width, line_height) = self.renderer.cell_size();
+        let content_width = (width - 2.0 * TERMINAL_PADDING_X).max(0.0);
+        let content_height = (height - TAB_HEIGHT as f32 - 2.0 * TERMINAL_PADDING_Y).max(0.0);
 
-        let new_cols = (width / cell_width).floor().max(10.0) as u16;
-        let new_rows = (height / line_height).floor().max(5.0) as u16;
+        let new_cols = (content_width / cell_width).floor().max(10.0) as u16;
+        let new_rows = (content_height / line_height).floor().max(5.0) as u16;
 
-        self.tabs[active_tab]
-            .terminal
-            .performer
-            .resize(new_cols as usize, new_rows as usize);
-
-        self.send_to_pty(PtyInput::Resize {
-            cols: new_cols,
-            rows: new_rows,
-        });
+        self.resize_all_tabs(new_cols, new_rows);
 
         self.renderer.resize(size.width, size.height);
 
@@ -363,10 +426,21 @@ impl MyApp {
 
         let normalized = text.replace("\r\n", "\n").replace('\n', "\r");
 
-        let mut data = Vec::with_capacity(normalized.len() + 12);
-        data.extend_from_slice(b"\x1b[200~");
-        data.extend_from_slice(normalized.as_bytes());
-        data.extend_from_slice(b"\x1b[201~");
+        let bracketed_paste_enabled = self
+            .tabs
+            .get(self.active_tab)
+            .map(|tab| tab.terminal.performer.bracketed_paste)
+            .unwrap_or(false);
+
+        let data = if bracketed_paste_enabled {
+            let mut data = Vec::with_capacity(normalized.len() + 12);
+            data.extend_from_slice(b"\x1b[200~");
+            data.extend_from_slice(normalized.as_bytes());
+            data.extend_from_slice(b"\x1b[201~");
+            data
+        } else {
+            normalized.into_bytes()
+        };
 
         self.send_to_pty(PtyInput::Data(data));
         self.reset_scrollback_view();
@@ -462,18 +536,13 @@ impl MyApp {
         };
 
         let (cell_width, line_height) = self.renderer.cell_size();
-        let new_cols = (self.renderer.width as f32 / cell_width).floor().max(10.0) as u16;
-        let new_rows = (self.renderer.height as f32 / line_height).floor().max(5.0) as u16;
+        let content_width = (self.renderer.width as f32 - 2.0 * TERMINAL_PADDING_X).max(0.0);
+        let content_height =
+            (self.renderer.height as f32 - TAB_HEIGHT as f32 - 2.0 * TERMINAL_PADDING_Y).max(0.0);
+        let new_cols = (content_width / cell_width).floor().max(10.0) as u16;
+        let new_rows = (content_height / line_height).floor().max(5.0) as u16;
 
-        self.tabs[active_tab]
-            .terminal
-            .performer
-            .resize(new_cols as usize, new_rows as usize);
-
-        self.send_to_pty(PtyInput::Resize {
-            cols: new_cols,
-            rows: new_rows,
-        });
+        self.resize_all_tabs(new_cols, new_rows);
 
         let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
         self.scroll_offset = self.scroll_offset.min(max_offset).max(0);
@@ -482,19 +551,12 @@ impl MyApp {
 
     fn reset_scrollback_view(&mut self) {
         self.scroll_offset = 0;
-        if let Some(active_tab) = self.normalize_active_tab() {
-            self.tabs[active_tab].terminal.performer.cursor_visible = true;
-        }
     }
     pub fn update_cursor_blink(&mut self) -> bool {
         let blink_interval = std::time::Duration::from_millis(500);
         let now = std::time::Instant::now();
 
-        let cursor_visible = self
-            .tabs
-            .get(self.active_tab)
-            .map(|tab| tab.terminal.performer.cursor_visible)
-            .unwrap_or(false);
+        let cursor_visible = self.cursor_render_visible();
 
         if self.cursor_blink_active()
             && cursor_visible
@@ -509,11 +571,7 @@ impl MyApp {
     }
 
     pub fn next_blink_deadline(&self) -> Option<Instant> {
-        let cursor_visible = self
-            .tabs
-            .get(self.active_tab)
-            .map(|tab| tab.terminal.performer.cursor_visible)
-            .unwrap_or(false);
+        let cursor_visible = self.cursor_render_visible();
 
         if self.cursor_blink_active() && cursor_visible {
             Some(self.last_blink + Duration::from_millis(500))
@@ -532,6 +590,9 @@ impl MyApp {
             .map(|tab| tab.terminal.performer.focus_reporting_enabled())
             .unwrap_or(false);
         self.has_focus = has_focus;
+
+        // Avoid resuming focused blinking in the "off" phase.
+        self.cursor_blink_on = true;
 
         if focus_reporting_enabled {
             let sequence = if has_focus {
