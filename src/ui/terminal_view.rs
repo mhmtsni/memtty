@@ -252,6 +252,12 @@ impl ApplicationHandler<Message> for TerminalView {
                 should_redraw = true;
             }
 
+            // WindowEvent::CursorMoved {
+            //     device_id,
+            //     position,
+            // } => {
+            //     state.handle_cursor_moved(device_id, position);
+            // }
             WindowEvent::KeyboardInput { event, .. } => {
                 let is_pressed = event.state == ElementState::Pressed;
 
@@ -261,6 +267,7 @@ impl ApplicationHandler<Message> for TerminalView {
                     should_redraw = true;
                 }
             }
+
             WindowEvent::Focused(focused) => {
                 state.update_has_focus(focused);
                 should_redraw = true;

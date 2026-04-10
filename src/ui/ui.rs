@@ -189,9 +189,14 @@ impl MyApp {
             .iter()
             .enumerate()
             .map(|(i, tab)| {
-                let title = format!("Tab {}", tab.id);
+                let title = if tab.terminal.performer.title.is_empty() {
+                    format!("Tab {}", tab.id)
+                } else {
+                    tab.terminal.performer.title.clone()
+                };
+
                 TabRenderInfo {
-                    _title: title,
+                    title,
                     x: (i as f32 * tab_width).round() as usize,
                     y: 0,
                     width: tab_width.round() as usize,

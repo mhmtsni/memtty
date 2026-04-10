@@ -122,6 +122,8 @@ pub struct Performer {
     // pending wrap: next print will first advance to next line
     pending_wrap: bool,
     focus_enable: bool,
+
+    pub title: String,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +174,7 @@ impl Default for Performer {
             scroll_top: 0,
             scroll_bottom: rows - 1,
             default_fg,
+            title: String::new(),
             default_bg,
             palette_256,
             current_fg: default_fg,
@@ -990,8 +993,20 @@ impl Perform for Performer {
         match cmd {
             // OSC 0 / 1 / 2 — set icon name / title (callers can poll a title field)
             0 | 1 | 2 => {
-                // To expose the title add a `pub title: String` field and set it here.
-                let _ = arg(1); // UTF-8 title bytes
+                // vte splits OSC params on ';', so a title that contains ';'
+                // would be spread across params[1..]. Re-join with ';'.
+                if params.len() <= 1 {
+                    self.title.clear();
+                } else {
+                    let mut title_bytes: Vec<u8> = Vec::new();
+                    for (i, part) in params.iter().enumerate().skip(1) {
+                        if i > 1 {
+                            title_bytes.push(b';');
+                        }
+                        title_bytes.extend_from_slice(part);
+                    }
+                    self.title = String::from_utf8_lossy(&title_bytes).to_string();
+                }
             }
 
             // OSC 4 — set color palette entry

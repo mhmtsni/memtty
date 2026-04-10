@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Shaping, Style, SwashCache, TextArea,
-    TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
+    TextAtlas, TextBounds, TextRenderer, Viewport, Weight, cosmic_text::Align,
 };
 use wgpu::{Device, MultisampleState, Queue, TextureFormat};
 
@@ -62,8 +62,9 @@ pub struct CursorRenderInfo {
     pub blink_on: bool,
 }
 
+#[derive(Clone)]
 pub struct TabRenderInfo {
-    pub _title: String,
+    pub title: String,
     pub active: bool,
     pub width: usize,
     pub height: usize,
@@ -124,6 +125,9 @@ pub struct Renderer {
     pub height: u32,
     line_height: f32,
     cell_width: f32,
+    tab_buffer: Vec<Buffer>,
+    tabs_cache: Vec<TabRenderInfo>,
+    tabs_need_shape: bool,
     spans_cache: Vec<(String, Attrs<'static>)>,
     solid_vertices: Vec<SolidVertex>,
     background_vertex_count: usize,
@@ -251,6 +255,9 @@ impl Renderer {
             font_family_name,
             swash_cache,
             buffer,
+            tab_buffer: Vec::new(),
+            tabs_cache: Vec::new(),
+            tabs_need_shape: false,
             atlas,
             text_renderer,
             viewport,
@@ -399,6 +406,42 @@ impl Renderer {
             content_changed_hint,
         );
 
+        self.tabs_cache = tabs.clone().unwrap_or_default();
+
+        if self.tabs_cache.len() != self.tab_buffer.len() {
+            self.tab_buffer.resize_with(self.tabs_cache.len(), || {
+                Buffer::new(
+                    &mut self.font_system,
+                    Metrics::new(self.font_size, self.line_height),
+                )
+            });
+        }
+
+        for i in 0..self.tabs_cache.len() {
+            let tab = &self.tabs_cache[i];
+            let color = if tab.active {
+                Color::rgb(229, 229, 229)
+            } else {
+                Color::rgb(160, 160, 160)
+            };
+            self.tab_buffer[i].set_size(
+                &mut self.font_system,
+                Some(tab.width as f32),
+                Some(tab.height as f32),
+            );
+            let attrs = Attrs::new()
+                .family(font_family(self.font_family_name))
+                .color(color);
+            self.tab_buffer[i].set_text(
+                &mut self.font_system,
+                &tab.title,
+                &attrs,
+                Shaping::Basic,
+                Some(Align::Center),
+            );
+        }
+        self.tabs_need_shape = true;
+
         if !dirty_info.any_dirty {
             return;
         }
@@ -434,6 +477,12 @@ impl Renderer {
             self.buffer.shape_until_scroll(&mut self.font_system, true);
             self.needs_shape = false;
         }
+        if self.tabs_need_shape {
+            for b in &mut self.tab_buffer {
+                b.shape_until_scroll(&mut self.font_system, true);
+            }
+            self.tabs_need_shape = false;
+        }
 
         self.viewport.update(
             queue,
@@ -448,26 +497,51 @@ impl Renderer {
             let content_left = this.content_left();
             let content_right = content_left + this.content_width();
             let content_bottom = content_top + this.content_height();
+            let mut areas = Vec::with_capacity(1 + this.tab_buffer.len());
+            let terminal = TextArea {
+                buffer: &this.buffer,
+                left: content_left,
+                top: content_top,
+                scale: 1.0,
+                bounds: TextBounds {
+                    left: content_left as i32,
+                    top: content_top as i32,
+                    right: content_right as i32,
+                    bottom: content_bottom as i32,
+                },
+                default_color: fg_color,
+                custom_glyphs: &[],
+            };
+
+            areas.push(terminal);
+            for i in 0..this.tabs_cache.len() {
+                let tab = this.tabs_cache[i].clone();
+                let text_left = tab.x as f32;
+                let text_top = tab.y as f32 + (tab.height as f32 - this.line_height) * 0.5;
+                let tab_area = TextArea {
+                    buffer: &this.tab_buffer[i],
+                    left: text_left,
+                    top: text_top,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: tab.x as i32,
+                        top: tab.y as i32,
+                        right: (tab.x + tab.width) as i32,
+                        bottom: (tab.y + tab.height) as i32,
+                    },
+                    default_color: fg_color,
+                    custom_glyphs: &[],
+                };
+                areas.push(tab_area);
+            }
+
             this.text_renderer.prepare(
                 device,
                 queue,
                 &mut this.font_system,
                 &mut this.atlas,
                 &this.viewport,
-                vec![TextArea {
-                    buffer: &this.buffer,
-                    left: content_left,
-                    top: content_top,
-                    scale: 1.0,
-                    bounds: TextBounds {
-                        left: content_left as i32,
-                        top: content_top as i32,
-                        right: content_right as i32,
-                        bottom: content_bottom as i32,
-                    },
-                    default_color: fg_color,
-                    custom_glyphs: &[],
-                }],
+                areas,
                 &mut this.swash_cache,
             )
         };
@@ -520,7 +594,6 @@ impl Renderer {
         }
 
         let mut text_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Text Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
