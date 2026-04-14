@@ -24,7 +24,7 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    fn request_redraw_if_needed(&mut self) {
+    pub fn request_redraw_if_needed(&mut self) {
         if self.redraw_requested {
             return;
         }
@@ -252,12 +252,22 @@ impl ApplicationHandler<Message> for TerminalView {
                 should_redraw = true;
             }
 
-            // WindowEvent::CursorMoved {
-            //     device_id,
-            //     position,
-            // } => {
-            //     state.handle_cursor_moved(device_id, position);
-            // }
+            WindowEvent::CursorMoved {
+                device_id: _,
+                position,
+            } => {
+                state.handle_cursor_moved(position);
+            }
+
+            WindowEvent::MouseInput {
+                device_id: _,
+                state: element_state,
+                button,
+            } => {
+                state.handle_mouse_click(element_state, button);
+                should_redraw = true;
+            }
+
             WindowEvent::KeyboardInput { event, .. } => {
                 let is_pressed = event.state == ElementState::Pressed;
 

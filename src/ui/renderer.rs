@@ -65,6 +65,7 @@ pub struct CursorRenderInfo {
 #[derive(Clone)]
 pub struct TabRenderInfo {
     pub title: String,
+    pub is_hovered: bool,
     pub active: bool,
     pub width: usize,
     pub height: usize,

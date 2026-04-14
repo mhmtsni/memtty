@@ -3,8 +3,8 @@ use std::{fmt::Debug, sync::Arc};
 use arboard::Clipboard;
 use tokio::sync::mpsc::UnboundedSender;
 use winit::{
-    dpi::PhysicalSize,
-    event::{ElementState, KeyEvent, MouseScrollDelta},
+    dpi::{PhysicalPosition, PhysicalSize},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta},
     event_loop::EventLoopProxy,
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Fullscreen, Window},
@@ -44,6 +44,7 @@ pub struct MyApp {
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
     pub scroll_offset: i32,
+    pub mouse_position: PhysicalPosition<f64>,
     full_screen: bool,
     modifiers: ModifiersState,
     pub renderer: Renderer,
@@ -144,6 +145,7 @@ impl MyApp {
                 tx: Some(tx_to_pty),
             }],
             active_tab: 0,
+            mouse_position: PhysicalPosition::new(0.0, 0.0),
             scroll_offset: 0,
             window,
             modifiers: ModifiersState::empty(),
@@ -197,6 +199,10 @@ impl MyApp {
 
                 TabRenderInfo {
                     title,
+                    is_hovered: (self.mouse_position.x >= i as f64 * tab_width as f64)
+                        && (self.mouse_position.x < (i as f64 + 1.0) * tab_width as f64)
+                        && (self.mouse_position.y >= 0.0)
+                        && (self.mouse_position.y < TAB_HEIGHT as f64),
                     x: (i as f32 * tab_width).round() as usize,
                     y: 0,
                     width: tab_width.round() as usize,
@@ -297,6 +303,63 @@ impl MyApp {
         let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
         self.scroll_offset = (self.scroll_offset + scroll_amount).max(0).min(max_offset);
         self.sync_renderer_from_terminal(false);
+    }
+
+    pub fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>) {
+        self.mouse_position = position;
+
+        let Some(mut tabs) = self.visible_tab_info(self.tabs.len()) else {
+            return;
+        };
+
+        for tab in tabs.iter_mut() {
+            if self.is_mouse_on_tab(position, tab) {
+                tab.is_hovered = true;
+                self.sync_renderer_from_terminal(true);
+                self.window.request_redraw();
+            } else {
+                tab.is_hovered = false;
+                self.sync_renderer_from_terminal(true);
+                self.window.request_redraw();
+            }
+        }
+    }
+
+    pub fn handle_mouse_click(&mut self, state: ElementState, button: MouseButton) {
+        if state != ElementState::Pressed {
+            return;
+        }
+        if button == MouseButton::Left {
+            self.handle_tab_click(self.mouse_position);
+        }
+        self.sync_renderer_from_terminal(true);
+    }
+
+    fn handle_tab_click(&mut self, position: PhysicalPosition<f64>) {
+        let Some(mut tabs) = self.visible_tab_info(self.tabs.len()) else {
+            return;
+        };
+
+        for (index, tab) in tabs.iter_mut().enumerate() {
+            if self.is_mouse_on_tab(position, tab) {
+                self.active_tab = index;
+                self.reset_scrollback_view();
+                self.sync_renderer_from_terminal(true);
+
+                return;
+            }
+        }
+    }
+
+    fn is_mouse_on_tab(&self, position: PhysicalPosition<f64>, tab: &mut TabRenderInfo) -> bool {
+        if position.x >= tab.x as f64
+            && position.x < (tab.x + tab.width) as f64
+            && position.y >= tab.y as f64
+            && position.y < (tab.y + tab.height) as f64
+        {
+            return true;
+        }
+        false
     }
 
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {
