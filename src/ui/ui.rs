@@ -7,7 +7,7 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta},
     event_loop::EventLoopProxy,
     keyboard::{Key, ModifiersState, NamedKey},
-    window::{Fullscreen, Window},
+    window::{CursorIcon, Fullscreen, Window},
 };
 
 use crate::{
@@ -27,6 +27,7 @@ mod clipboard;
 mod core;
 mod cursor;
 mod input;
+mod mouse;
 mod render_sync;
 mod resize;
 mod scroll;
@@ -54,6 +55,7 @@ pub struct MyApp {
     pub active_tab: usize,
     pub scroll_offset: i32,
     pub mouse_position: PhysicalPosition<f64>,
+    pub mouse_icon: CursorIcon,
 
     mouse_button_held: Option<MouseButton>,
     mouse_hold_start: Option<Instant>,
@@ -76,6 +78,7 @@ impl MyApp {
     ) -> Self {
         let mut app = Self {
             full_screen: false,
+            mouse_icon: CursorIcon::Text,
             tabs: vec![Tab {
                 id: 0,
                 terminal: Terminal::new(),

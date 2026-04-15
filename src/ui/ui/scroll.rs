@@ -57,27 +57,28 @@ impl MyApp {
 
         self.mouse_position = position;
 
+        let cursor_changed = self.set_mouse_icon(position);
+
         if self.dragging_scroll_indicator {
             self.handle_scroll_indicator_drag(position);
             return true;
         }
 
-        if previous_hovered == new_hovered {
+        if previous_hovered == new_hovered && !cursor_changed {
             return false;
         }
 
-        self.sync_renderer_from_terminal(true);
+        if previous_hovered != new_hovered {
+            self.sync_renderer_from_terminal(true);
+        }
+
         true
     }
 
-    fn is_position_on_scroll_indicator(&self, position: PhysicalPosition<f64>) -> bool {
+    pub fn is_position_on_scroll_indicator(&self, position: PhysicalPosition<f64>) -> bool {
         let Some(info) = self.visible_scroll_indicator_info() else {
             return false;
         };
-
-        if !info.visible {
-            return false;
-        }
 
         let indicator_x =
             self.renderer.width as f64 - INDICATOR_WIDTH as f64 - TERMINAL_PADDING_X as f64;
@@ -164,14 +165,18 @@ impl MyApp {
         }
     }
 
-    fn is_mouse_on_tab(&self, position: PhysicalPosition<f64>, tab: &mut TabRenderInfo) -> bool {
+    pub fn is_mouse_on_tab(
+        &self,
+        position: PhysicalPosition<f64>,
+        tab: &mut TabRenderInfo,
+    ) -> bool {
         position.x >= tab.x as f64
             && position.x < (tab.x + tab.width) as f64
             && position.y >= tab.y as f64
             && position.y < (tab.y + tab.height) as f64
     }
 
-    fn tab_index_at_position(&self, position: PhysicalPosition<f64>) -> Option<usize> {
+    pub(super) fn tab_index_at_position(&self, position: PhysicalPosition<f64>) -> Option<usize> {
         if self.tabs.is_empty() || position.y < 0.0 || position.y >= TAB_HEIGHT as f64 {
             return None;
         }
@@ -189,4 +194,3 @@ impl MyApp {
         Some(index as usize)
     }
 }
-

@@ -16,6 +16,7 @@ impl MyApp {
 
         let cursor = self.visible_cursor_info(visible_rows, rows.len());
         let scroll_indicator = self.visible_scroll_indicator_info();
+        self.window.set_cursor(self.mouse_icon);
 
         self.renderer
             .set_cells(&rows, cursor, tabs, scroll_indicator, content_changed);
@@ -115,4 +116,3 @@ impl MyApp {
         })
     }
 }
-
