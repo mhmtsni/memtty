@@ -15,8 +15,9 @@ use crate::{
     terminal::{CursorStyle, Terminal},
     ui::{
         renderer::{
-            CursorRenderInfo, CursorRenderStyle, Renderer, TAB_HEIGHT, TERMINAL_PADDING_X,
-            TERMINAL_PADDING_Y, TabRenderInfo,
+            CursorRenderInfo, CursorRenderStyle, INDICATOR_WIDTH, Renderer,
+            ScrollIndicatorRenderInfo, TAB_HEIGHT, TERMINAL_PADDING_X, TERMINAL_PADDING_Y,
+            TabRenderInfo,
         },
         terminal_view::spawn_pty_for_tab,
     },
@@ -45,12 +46,18 @@ pub struct MyApp {
     pub active_tab: usize,
     pub scroll_offset: i32,
     pub mouse_position: PhysicalPosition<f64>,
+
+    mouse_button_held: Option<MouseButton>,
+    mouse_hold_start: Option<Instant>,
     full_screen: bool,
     modifiers: ModifiersState,
     pub renderer: Renderer,
     cursor_blink_on: bool,
     last_blink: Instant,
     pub has_focus: bool,
+    dragging_scroll_indicator: bool,
+    drag_start_y: f64,
+    drag_start_scroll_offset: i32,
 }
 
 impl MyApp {
@@ -153,6 +160,11 @@ impl MyApp {
             cursor_blink_on: true,
             last_blink: std::time::Instant::now(),
             has_focus: true,
+            mouse_button_held: None,
+            mouse_hold_start: None,
+            dragging_scroll_indicator: false,
+            drag_start_y: 0.0,
+            drag_start_scroll_offset: 0,
         };
 
         app.sync_renderer_from_terminal(true);
@@ -162,7 +174,8 @@ impl MyApp {
     pub fn sync_renderer_from_terminal(&mut self, content_changed: bool) {
         let tabs = self.visible_tab_info(self.tabs.len());
         let Some(active_tab) = self.normalize_active_tab() else {
-            self.renderer.set_cells(&[], None, tabs, content_changed);
+            self.renderer
+                .set_cells(&[], None, tabs, None, content_changed);
             return;
         };
 
@@ -172,9 +185,10 @@ impl MyApp {
             .visible_rows(self.scroll_offset, visible_rows);
 
         let cursor = self.visible_cursor_info(visible_rows, rows.len());
+        let scroll_indicator = self.visible_scroll_indicator_info();
 
         self.renderer
-            .set_cells(&rows, cursor, tabs, content_changed);
+            .set_cells(&rows, cursor, tabs, scroll_indicator, content_changed);
     }
 
     fn visible_tab_info(&self, tab_count: usize) -> Option<Vec<TabRenderInfo>> {
@@ -192,7 +206,7 @@ impl MyApp {
             .enumerate()
             .map(|(i, tab)| {
                 let title = if tab.terminal.performer.title.is_empty() {
-                    format!("Tab {}", tab.id)
+                    format!("~")
                 } else {
                     tab.terminal.performer.title.clone()
                 };
@@ -270,6 +284,38 @@ impl MyApp {
             blink_on,
         })
     }
+    fn visible_scroll_indicator_info(&self) -> Option<ScrollIndicatorRenderInfo> {
+        let tab = self.tabs.get(self.active_tab)?;
+        let scrollback_len = tab.terminal.performer.scrollback.len() as f32;
+        let visible_lines = tab.terminal.performer.rows as f32;
+        let total_lines = scrollback_len + visible_lines;
+
+        if total_lines <= 0.0 || scrollback_len == 0.0 {
+            return None;
+        }
+
+        let viewport_height = self.renderer.height as f32;
+        let tab_bar_height = TAB_HEIGHT as f32; // senin sabitin ne ise
+        let usable_height = viewport_height - tab_bar_height;
+
+        let raw_height = (visible_lines / total_lines) * usable_height;
+        let indicator_height = raw_height.max(16.0).min(usable_height);
+
+        // Gerçek max_scroll ne ise onu kullan
+        let max_scroll = scrollback_len; // <- scroll clamp'inle eşleştir
+        let scroll_offset = (self.scroll_offset as f32).clamp(0.0, max_scroll);
+
+        let position_ratio = 1.0 - (scroll_offset / max_scroll);
+
+        let scrollable_track = (usable_height - indicator_height).max(0.0);
+        let position_y = tab_bar_height + scrollable_track * position_ratio;
+
+        Some(ScrollIndicatorRenderInfo {
+            height: indicator_height,
+            visible: true,
+            position_y,
+        })
+    }
 
     fn send_to_pty(&mut self, data: PtyInput) {
         if self.tabs.is_empty() {
@@ -311,6 +357,11 @@ impl MyApp {
 
         self.mouse_position = position;
 
+        if self.dragging_scroll_indicator {
+            self.handle_scroll_indicator_drag(position);
+            return true;
+        }
+
         if previous_hovered == new_hovered {
             return false;
         }
@@ -318,15 +369,84 @@ impl MyApp {
         self.sync_renderer_from_terminal(true);
         true
     }
+    fn is_position_on_scroll_indicator(&self, position: PhysicalPosition<f64>) -> bool {
+        let Some(info) = self.visible_scroll_indicator_info() else {
+            return false;
+        };
+
+        if !info.visible {
+            return false;
+        }
+
+        let indicator_x =
+            self.renderer.width as f64 - INDICATOR_WIDTH as f64 - TERMINAL_PADDING_X as f64;
+        let indicator_y = info.position_y as f64;
+        let indicator_w = INDICATOR_WIDTH as f64;
+        let indicator_h = info.height as f64;
+
+        position.x >= indicator_x
+            && position.x <= indicator_x + indicator_w
+            && position.y >= indicator_y
+            && position.y <= indicator_y + indicator_h
+    }
 
     pub fn handle_mouse_click(&mut self, state: ElementState, button: MouseButton) {
-        if state != ElementState::Pressed {
-            return;
-        }
-        if button == MouseButton::Left {
-            self.handle_tab_click(self.mouse_position);
+        match state {
+            ElementState::Pressed => {
+                self.mouse_button_held = Some(button);
+                self.mouse_hold_start = Some(Instant::now());
+
+                if button == MouseButton::Left {
+                    if self.is_position_on_scroll_indicator(self.mouse_position) {
+                        self.dragging_scroll_indicator = true;
+                        self.drag_start_y = self.mouse_position.y;
+                        self.drag_start_scroll_offset = self.scroll_offset;
+                    } else {
+                        self.handle_tab_click(self.mouse_position);
+                    }
+                }
+            }
+            ElementState::Released => {
+                self.mouse_button_held = None;
+                self.mouse_hold_start = None;
+                self.dragging_scroll_indicator = false;
+            }
         }
         self.sync_renderer_from_terminal(true);
+    }
+    fn handle_scroll_indicator_drag(&mut self, position: PhysicalPosition<f64>) {
+        let Some(active_tab) = self.normalize_active_tab() else {
+            return;
+        };
+
+        let tab_bar_height = TAB_HEIGHT as f32;
+        let viewport_height = self.renderer.height as f32;
+        let usable_height = viewport_height - tab_bar_height;
+
+        let scrollback_len = self.tabs[active_tab].terminal.performer.scrollback.len() as f32;
+        let visible_lines = self.tabs[active_tab].terminal.performer.rows as f32;
+        let total_lines = scrollback_len + visible_lines;
+
+        let raw_height = (visible_lines / total_lines) * usable_height;
+        let indicator_height = raw_height.max(16.0).min(usable_height);
+        let scrollable_track = (usable_height - indicator_height).max(0.0);
+
+        if scrollable_track <= 0.0 {
+            return;
+        }
+
+        let delta_y = position.y - self.drag_start_y;
+        // track üzerindeki delta → ratio değişimi
+        let ratio_delta = delta_y as f32 / scrollable_track;
+        // ratio arttıkça scroll_offset azalır (aşağı hareket = daha az scrollback)
+        let offset_delta = -(ratio_delta * scrollback_len) as i32;
+
+        let max_offset = scrollback_len as i32;
+        self.scroll_offset = (self.drag_start_scroll_offset + offset_delta)
+            .max(0)
+            .min(max_offset);
+
+        self.sync_renderer_from_terminal(false);
     }
 
     fn handle_tab_click(&mut self, position: PhysicalPosition<f64>) {

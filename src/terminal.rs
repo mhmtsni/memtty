@@ -1609,4 +1609,62 @@ mod tests {
         assert_eq!(t.performer.grid[0][2].c, 'q');
         assert_eq!(t.performer.grid[0][3].c, 'q');
     }
+
+    #[test]
+    fn test_visible_rows_with_no_scrollback_returns_bottom_of_grid() {
+        let t = term();
+        let rows = t.visible_rows(0, 2);
+        assert_eq!(rows.len(), 2);
+        // With a fresh terminal, grid is blank; check we got the last two grid rows.
+        assert_eq!(rows[0].len(), COLS);
+        assert_eq!(rows[1].len(), COLS);
+        // Pointer identity isn't stable here; check content is blank space.
+        assert_eq!(rows[0][0].c, ' ');
+        assert_eq!(rows[1][0].c, ' ');
+    }
+
+    #[test]
+    fn test_visible_rows_with_scrollback_offset_shows_scrollback() {
+        let mut t = term();
+        // Force at least one scrollback line.
+        t.process(b"\x1b[24;1H\n");
+        assert_eq!(t.performer.scrollback.len(), 1);
+
+        // When scrolled up, visible window should include scrollback row.
+        let rows = t.visible_rows(1, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), COLS);
+    }
+
+    #[test]
+    fn test_osc_title_rejoins_semicolons() {
+        let mut t = term();
+        // OSC 2;hello;world ST
+        t.process(b"\x1b]2;hello;world\x07");
+        assert_eq!(t.performer.title, "hello;world");
+    }
+
+    #[test]
+    fn test_parse_color_spec_hash_short_and_long() {
+        assert_eq!(parse_color_spec("#abc"), Some(Color::rgb(0xaa, 0xbb, 0xcc)));
+        assert_eq!(
+            parse_color_spec("#0a0b0c"),
+            Some(Color::rgb(0x0a, 0x0b, 0x0c))
+        );
+        assert_eq!(parse_color_spec("#zzzzzz"), None);
+    }
+
+    #[test]
+    fn test_parse_color_spec_rgb_colon_form() {
+        assert_eq!(
+            parse_color_spec("rgb:ff/00/80"),
+            Some(Color::rgb(0xff, 0x00, 0x80))
+        );
+        // Accept 1-digit components by taking top 2 chars (here: "a" -> "a").
+        assert_eq!(
+            parse_color_spec("rgb:a/b/c"),
+            Some(Color::rgb(0x0a, 0x0b, 0x0c))
+        );
+        assert_eq!(parse_color_spec("rgb:ff/00"), None);
+    }
 }

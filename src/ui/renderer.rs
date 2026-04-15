@@ -11,6 +11,7 @@ mod renderer_background;
 mod renderer_cache;
 mod renderer_cursor;
 mod renderer_dirty;
+mod renderer_scroll_indicator;
 mod renderer_tab;
 mod renderer_text;
 
@@ -19,6 +20,7 @@ const CELL_WIDTH_FACTOR: f32 = 0.55;
 const INITIAL_SOLID_VERTEX_CAPACITY: usize = 2048;
 const CELL_WIDTH_SAMPLE_COUNT: usize = 32;
 pub const TAB_HEIGHT: usize = 50;
+pub const INDICATOR_WIDTH: f32 = 12.0;
 pub const TERMINAL_PADDING_X: f32 = 8.0;
 pub const TERMINAL_PADDING_Y: f32 = 1.0;
 
@@ -71,6 +73,13 @@ pub struct TabRenderInfo {
     pub height: usize,
     pub x: usize,
     pub y: usize,
+}
+
+#[derive(Clone)]
+pub struct ScrollIndicatorRenderInfo {
+    pub visible: bool,
+    pub position_y: f32,
+    pub height: f32,
 }
 
 #[repr(C)]
@@ -380,6 +389,7 @@ impl Renderer {
         rows: &[&Vec<Cell>],
         cursor: Option<CursorRenderInfo>,
         tabs: Option<Vec<TabRenderInfo>>,
+        scroll_indicator: Option<ScrollIndicatorRenderInfo>,
         content_changed_hint: bool,
     ) {
         let cursor_block_cell = cursor.and_then(|c| match c.style {
@@ -465,6 +475,7 @@ impl Renderer {
         renderer_cursor::render_cursor_overlay(self, cursor);
 
         renderer_tab::render_tab_overlay(self, tabs);
+        renderer_scroll_indicator::render_scroll_indicator_overlay(self, scroll_indicator);
 
         // ── Update the cache snapshot ─────────────────────────────────────────
         renderer_cache::update_last_grid_snapshot(self, rows, &dirty_info.content_dirty);
@@ -841,4 +852,74 @@ fn measure_monospace_cell_width(
     }
 
     fallback
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn srgb_to_linear_endpoints() {
+        assert!((srgb_to_linear(0.0) - 0.0).abs() < f32::EPSILON);
+        assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn srgb_to_linear_is_monotonic_for_simple_samples() {
+        let a = srgb_to_linear(0.1);
+        let b = srgb_to_linear(0.2);
+        let c = srgb_to_linear(0.7);
+        assert!(a < b && b < c);
+    }
+
+    #[test]
+    fn color_to_rgba_f32_preserves_alpha_and_converts_channels() {
+        let c = Color::rgba(255, 0, 0, 128);
+        let rgba = color_to_rgba_f32(c);
+        assert!((rgba[0] - 1.0).abs() < 1e-6);
+        assert!(rgba[1] >= 0.0 && rgba[1] < 1e-6);
+        assert!(rgba[2] >= 0.0 && rgba[2] < 1e-6);
+        assert!((rgba[3] - (128.0 / 255.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn contrast_text_color_picks_white_for_dark_background() {
+        assert_eq!(
+            contrast_text_color(Color::rgb(0, 0, 0)),
+            Color::rgb(255, 255, 255)
+        );
+        assert_eq!(
+            contrast_text_color(Color::rgb(10, 10, 10)),
+            Color::rgb(255, 255, 255)
+        );
+    }
+
+    #[test]
+    fn contrast_text_color_picks_black_for_bright_background() {
+        assert_eq!(
+            contrast_text_color(Color::rgb(255, 255, 255)),
+            Color::rgb(0, 0, 0)
+        );
+        assert_eq!(
+            contrast_text_color(Color::rgb(240, 240, 240)),
+            Color::rgb(0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn cursor_cache_key_maps_styles_and_fields() {
+        let c = CursorRenderInfo {
+            col: 3,
+            row: 4,
+            style: CursorRenderStyle::Underline,
+            color: Color::rgb(1, 2, 3),
+            blink_on: true,
+        };
+        let key = cursor_cache_key(c);
+        assert_eq!(key.col, 3);
+        assert_eq!(key.row, 4);
+        assert_eq!(key.style, 1);
+        assert_eq!(key.color, Color::rgb(1, 2, 3).0);
+        assert!(key.blink_on);
+    }
 }
