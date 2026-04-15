@@ -305,24 +305,18 @@ impl MyApp {
         self.sync_renderer_from_terminal(false);
     }
 
-    pub fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>) {
+    pub fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>) -> bool {
+        let previous_hovered = self.tab_index_at_position(self.mouse_position);
+        let new_hovered = self.tab_index_at_position(position);
+
         self.mouse_position = position;
 
-        let Some(mut tabs) = self.visible_tab_info(self.tabs.len()) else {
-            return;
-        };
-
-        for tab in tabs.iter_mut() {
-            if self.is_mouse_on_tab(position, tab) {
-                tab.is_hovered = true;
-                self.sync_renderer_from_terminal(true);
-                self.window.request_redraw();
-            } else {
-                tab.is_hovered = false;
-                self.sync_renderer_from_terminal(true);
-                self.window.request_redraw();
-            }
+        if previous_hovered == new_hovered {
+            return false;
         }
+
+        self.sync_renderer_from_terminal(true);
+        true
     }
 
     pub fn handle_mouse_click(&mut self, state: ElementState, button: MouseButton) {
@@ -360,6 +354,24 @@ impl MyApp {
             return true;
         }
         false
+    }
+
+    fn tab_index_at_position(&self, position: PhysicalPosition<f64>) -> Option<usize> {
+        if self.tabs.is_empty() || position.y < 0.0 || position.y >= TAB_HEIGHT as f64 {
+            return None;
+        }
+
+        let tab_width = self.renderer.width as f64 / self.tabs.len() as f64;
+        if tab_width <= 0.0 {
+            return None;
+        }
+
+        let index = (position.x / tab_width).floor() as isize;
+        if index < 0 || index as usize >= self.tabs.len() {
+            return None;
+        }
+
+        Some(index as usize)
     }
 
     pub fn handle_resize(&mut self, size: PhysicalSize<u32>) {

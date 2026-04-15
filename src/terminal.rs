@@ -25,6 +25,7 @@ pub struct Cell {
     pub c: char,
     pub fg: Color,
     pub bg: Color,
+    pub is_selected: bool,
     pub style: u8,
 }
 
@@ -33,6 +34,7 @@ impl Default for Cell {
         Self {
             c: ' ',
             fg: DEFAULT_FG,
+            is_selected: false,
             bg: DEFAULT_BG,
             style: 0,
         }
@@ -154,6 +156,7 @@ impl Default for Performer {
         let default_cell = Cell {
             c: ' ',
             fg: default_fg,
+            is_selected: false,
             bg: default_bg,
             style: 0,
         };
@@ -252,6 +255,7 @@ impl Performer {
             c: ' ',
             fg: self.current_fg,
             bg: self.current_bg,
+            is_selected: false,
             style: 0,
         };
         self.grid.resize(self.rows, vec![blank; self.cols]);
@@ -275,6 +279,7 @@ impl Performer {
             c: ' ',
             fg: self.current_fg,
             bg: self.current_bg,
+            is_selected: false,
             style: 0,
         }
     }
@@ -388,6 +393,7 @@ impl Performer {
             c: ' ',
             fg: self.current_fg,
             bg: self.current_bg,
+            is_selected: false,
             style: 0,
         };
         self.alt_grid = Some(std::mem::replace(
@@ -539,6 +545,7 @@ impl Perform for Performer {
                 c,
                 fg: self.current_fg,
                 bg: self.current_bg,
+                is_selected: false,
                 style: self.current_style,
             };
 

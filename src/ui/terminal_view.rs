@@ -256,7 +256,9 @@ impl ApplicationHandler<Message> for TerminalView {
                 device_id: _,
                 position,
             } => {
-                state.handle_cursor_moved(position);
+                if state.handle_cursor_moved(position) {
+                    should_redraw = true;
+                }
             }
 
             WindowEvent::MouseInput {
