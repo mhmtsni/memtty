@@ -1,45 +1,16 @@
 use std::collections::VecDeque;
 
 use glyphon::Color;
-use vte::{Parser, Perform};
+use vte::Perform;
 
-const MAX_SCROLLBACK: usize = 1000;
-const ROWS: usize = 24;
-const COLS: usize = 80;
-const DEFAULT_FG: Color = Color::rgb(229, 229, 229);
-const DEFAULT_BG: Color = Color::rgb(20, 25, 31);
+use super::{
+    cell::Cell,
+    charset::{charset_from_designator, map_dec_special_graphics, Charset},
+    colors::{default_palette_256, parse_color_spec, MAX_SCROLLBACK, DEFAULT_BG, DEFAULT_FG},
+};
 
-pub mod style {
-    pub const BOLD: u8 = 1 << 0;
-    pub const ITALIC: u8 = 1 << 1;
-    pub const UNDERLINE: u8 = 1 << 2;
-    pub const STRIKETHROUGH: u8 = 1 << 3;
-    pub const DIM: u8 = 1 << 4;
-    pub const BLINK: u8 = 1 << 5;
-    pub const REVERSE: u8 = 1 << 6;
-    pub const HIDDEN: u8 = 1 << 7;
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Cell {
-    pub c: char,
-    pub fg: Color,
-    pub bg: Color,
-    pub is_selected: bool,
-    pub style: u8,
-}
-
-impl Default for Cell {
-    fn default() -> Self {
-        Self {
-            c: ' ',
-            fg: DEFAULT_FG,
-            is_selected: false,
-            bg: DEFAULT_BG,
-            style: 0,
-        }
-    }
-}
+const DEFAULT_ROWS: usize = 24;
+const DEFAULT_COLS: usize = 80;
 
 /// Saved cursor state (DECSC/DECRC and CSI s/u).
 #[derive(Clone, Copy)]
@@ -55,18 +26,22 @@ struct SavedCursor {
     use_g1_charset: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Charset {
-    Ascii,
-    DecSpecialGraphics,
-}
-
 #[derive(Default)]
 pub enum CursorStyle {
     #[default]
     Block,
     Underline,
     Bar,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum MouseMode {
+    #[default]
+    None,
+    X10,         // ?9
+    Normal,      // ?1000
+    ButtonEvent, // ?1002
+    AnyEvent,    // ?1003
 }
 
 pub struct Performer {
@@ -93,22 +68,22 @@ pub struct Performer {
     pub rows: usize,
 
     // ── scroll region (inclusive, 0-based) ───────────────────────────────────
-    scroll_top: usize,
-    scroll_bottom: usize,
+    pub(super) scroll_top: usize,
+    pub(super) scroll_bottom: usize,
 
     // ── SGR state ────────────────────────────────────────────────────────────
-    default_fg: Color,
-    default_bg: Color,
-    palette_256: [Color; 256],
+    pub(super) default_fg: Color,
+    pub(super) default_bg: Color,
+    pub(super) palette_256: [Color; 256],
     pub current_fg: Color,
     pub current_bg: Color,
     pub current_style: u8,
 
     // ── modes ─────────────────────────────────────────────────────────────────
     /// Auto-wrap mode (default on).
-    auto_wrap: bool,
+    pub(super) auto_wrap: bool,
     /// DEC origin mode: cursor movement is relative to scroll region.
-    origin_mode: bool,
+    pub(super) origin_mode: bool,
     /// Application cursor keys (DECCKM).
     pub app_cursor_keys: bool,
     /// Bracketed paste mode.
@@ -122,34 +97,16 @@ pub struct Performer {
     use_g1_charset: bool,
 
     // pending wrap: next print will first advance to next line
-    pending_wrap: bool,
+    pub(super) pending_wrap: bool,
     focus_enable: bool,
 
     pub title: String,
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum MouseMode {
-    #[default]
-    None,
-    X10,         // ?9
-    Normal,      // ?1000
-    ButtonEvent, // ?1002
-    AnyEvent,    // ?1003
-}
-
-#[derive(Default)]
-pub struct Terminal {
-    pub parser: Parser,
-    pub performer: Performer,
-}
-
-// ─── Default / constructor ────────────────────────────────────────────────────
-
 impl Default for Performer {
     fn default() -> Self {
-        let rows = ROWS;
-        let cols = COLS;
+        let rows = DEFAULT_ROWS;
+        let cols = DEFAULT_COLS;
         let palette_256 = default_palette_256();
         let default_fg = DEFAULT_FG;
         let default_bg = DEFAULT_BG;
@@ -194,43 +151,6 @@ impl Default for Performer {
             pending_wrap: false,
             focus_enable: false,
         }
-    }
-}
-
-// ─── Terminal public API ──────────────────────────────────────────────────────
-
-impl Terminal {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn process(&mut self, bytes: &[u8]) {
-        self.parser.advance(&mut self.performer, bytes);
-    }
-
-    /// Visible rows for rendering, honouring scroll offset (positive = scrolled up).
-    pub fn visible_rows(&self, scroll_offset: i32, rows: usize) -> Vec<&Vec<Cell>> {
-        if rows == 0 {
-            return vec![];
-        }
-        let scrollback_len = self.performer.scrollback.len();
-        let grid_len = self.performer.grid.len();
-        let total_rows = scrollback_len + grid_len;
-        if total_rows == 0 {
-            return vec![];
-        }
-        let offset = scroll_offset.max(0) as usize;
-        let end = total_rows.saturating_sub(offset);
-        let start = end.saturating_sub(rows);
-        (start..end)
-            .map(|idx| {
-                if idx < scrollback_len {
-                    &self.performer.scrollback[idx]
-                } else {
-                    &self.performer.grid[idx - scrollback_len]
-                }
-            })
-            .collect()
     }
 }
 
@@ -288,11 +208,11 @@ impl Performer {
         vec![self.empty_cell(); self.cols]
     }
 
-    // ── scroll-region scroll ──────────────────────────────────────────────────
+    // ── scroll-region scroll ────────────────────────────────────────────────
 
     /// Scroll the scroll region up by `n` lines (content moves up, new blank
     /// lines appear at the bottom of the region).
-    fn scroll_up_region(&mut self, n: usize) {
+    pub(super) fn scroll_up_region(&mut self, n: usize) {
         for _ in 0..n {
             // Fast path: full-screen scroll can use pop_front/push_back and append
             // into scrollback.
@@ -321,7 +241,7 @@ impl Performer {
     }
 
     /// Scroll the scroll region down by `n` lines.
-    fn scroll_down_region(&mut self, n: usize) {
+    pub(super) fn scroll_down_region(&mut self, n: usize) {
         for _ in 0..n {
             if self.scroll_bottom < self.grid.len() {
                 self.grid.remove(self.scroll_bottom);
@@ -351,7 +271,7 @@ impl Performer {
         self.scroll_bottom = saved_bot;
     }
 
-    // ── cursor save / restore ─────────────────────────────────────────────────
+    // ── cursor save / restore ───────────────────────────────────────────────
 
     fn save_cursor(&mut self) {
         self.saved_cursor = Some(SavedCursor {
@@ -382,7 +302,7 @@ impl Performer {
         }
     }
 
-    // ── alt screen ────────────────────────────────────────────────────────────
+    // ── alt screen ──────────────────────────────────────────────────────────
 
     fn enter_alt_screen(&mut self) {
         if self.in_alt_screen {
@@ -456,7 +376,7 @@ impl Performer {
         }
     }
 
-    // ── DEC private mode set/reset ────────────────────────────────────────────
+    // ── DEC private mode set/reset ──────────────────────────────────────────
 
     fn set_dec_mode(&mut self, mode: usize, enable: bool) {
         match mode {
@@ -521,7 +441,7 @@ impl Performer {
 // ─── vte::Perform implementation ─────────────────────────────────────────────
 
 impl Perform for Performer {
-    // ── printable character ───────────────────────────────────────────────────
+    // ── printable character ─────────────────────────────────────────────────
     fn print(&mut self, c: char) {
         let c = self.translate_char(c);
 
@@ -558,7 +478,7 @@ impl Perform for Performer {
         }
     }
 
-    // ── C0 / C1 control codes ─────────────────────────────────────────────────
+    // ── C0 / C1 control codes ───────────────────────────────────────────────
 
     fn execute(&mut self, byte: u8) {
         match byte {
@@ -599,7 +519,7 @@ impl Perform for Performer {
         }
     }
 
-    // ── ESC sequences (not CSI, not OSC) ─────────────────────────────────────
+    // ── ESC sequences (not CSI, not OSC) ───────────────────────────────────
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
         match (intermediates.first().copied(), byte) {
@@ -665,7 +585,7 @@ impl Perform for Performer {
         }
     }
 
-    // ── CSI sequences ─────────────────────────────────────────────────────────
+    // ── CSI sequences ───────────────────────────────────────────────────────
 
     fn csi_dispatch(
         &mut self,
@@ -708,7 +628,7 @@ impl Perform for Performer {
         }
 
         match action {
-            // ── Cursor movement ───────────────────────────────────────────────
+            // ── Cursor movement ─────────────────────────────────────────────
             // CUU — cursor up
             'A' => {
                 let n = p1(0);
@@ -780,7 +700,7 @@ impl Perform for Performer {
                 self.pending_wrap = false;
             }
 
-            // ── Erase ─────────────────────────────────────────────────────────
+            // ── Erase ───────────────────────────────────────────────────────
             // ED — erase in display
             'J' => {
                 let empty = self.empty_cell();
@@ -857,13 +777,13 @@ impl Perform for Performer {
                 }
             }
 
-            // ── Scroll ────────────────────────────────────────────────────────
+            // ── Scroll ──────────────────────────────────────────────────────
             // SU — scroll up
             'S' => self.scroll_up(p1(0)),
             // SD — scroll down
             'T' => self.scroll_down(p1(0)),
 
-            // ── Line insertion / deletion ─────────────────────────────────────
+            // ── Line insertion / deletion ───────────────────────────────────
             // IL — insert lines
             'L' => {
                 let n = p1(0);
@@ -892,7 +812,7 @@ impl Perform for Performer {
                 self.pending_wrap = false;
             }
 
-            // ── Character insertion / deletion ────────────────────────────────
+            // ── Character insertion / deletion ─────────────────────────────
             // DCH — delete characters
             'P' => {
                 let empty = self.empty_cell();
@@ -929,7 +849,7 @@ impl Perform for Performer {
                 let _ = n; // stub
             }
 
-            // ── Cursor style (DECSCUSR) ───────────────────────────────────────
+            // ── Cursor style (DECSCUSR) ─────────────────────────────────────
             'q' if intermediates.first() == Some(&b' ') => {
                 match p(0) {
                     0 | 1 | 2 => self.cursor_style = CursorStyle::Block,
@@ -940,11 +860,11 @@ impl Perform for Performer {
                 self.cursor_blinking = matches!(p(0), 0 | 1 | 3 | 5);
             }
 
-            // ── Save / restore cursor (SCP / RCP) ─────────────────────────────
+            // ── Save / restore cursor (SCP / RCP) ───────────────────────────
             's' => self.save_cursor(),
             'u' => self.restore_cursor(),
 
-            // ── Scroll region (DECSTBM) ───────────────────────────────────────
+            // ── Scroll region (DECSTBM) ─────────────────────────────────────
             'r' => {
                 let top = p1(0).saturating_sub(1);
                 let bot = if p(1) == 0 { self.rows - 1 } else { p(1) - 1 };
@@ -958,22 +878,19 @@ impl Perform for Performer {
                 self.pending_wrap = false;
             }
 
-            // ── Device status report (DSR) ────────────────────────────────────
+            // ── Device status report (DSR) ──────────────────────────────────
             // We can't write back to the pty from here without a channel; stub.
             'n' => {}
 
-            // ── Device attributes (DA) ────────────────────────────────────────
+            // ── Device attributes (DA) ──────────────────────────────────────
             'c' => {}
 
-            // ── Erase character to right (same as ECH) ───────────────────────
-            // Already handled above as 'X'.
-
-            // ── SGR — Select Graphic Rendition ───────────────────────────────
+            // ── SGR — Select Graphic Rendition ─────────────────────────────
             'm' => {
                 self.apply_sgr(params);
             }
 
-            // ── Mode set/reset (SM/RM) — public modes ─────────────────────────
+            // ── Mode set/reset (SM/RM) — public modes ──────────────────────
             'h' => {
                 // e.g. CSI 4 h — insert mode (stub)
             }
@@ -985,7 +902,7 @@ impl Perform for Performer {
         }
     }
 
-    // ── OSC sequences ─────────────────────────────────────────────────────────
+    // ── OSC sequences ───────────────────────────────────────────────────────
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         // params[0] is the command number as ASCII bytes, params[1..] are args.
@@ -1078,9 +995,15 @@ impl Perform for Performer {
         }
     }
 
-    // ── DCS sequences ─────────────────────────────────────────────────────────
+    // ── DCS sequences ───────────────────────────────────────────────────────
 
-    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
+    fn hook(
+        &mut self,
+        _params: &vte::Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        _action: char,
+    ) {
         // DCS entry — e.g. DECRQSS, tmux passthrough
     }
 
@@ -1093,578 +1016,3 @@ impl Perform for Performer {
     }
 }
 
-// ─── SGR helper ───────────────────────────────────────────────────────────────
-
-impl Performer {
-    fn apply_sgr(&mut self, params: &vte::Params) {
-        let grouped_params: Vec<&[u16]> = params.iter().collect();
-        if grouped_params.is_empty() {
-            self.current_fg = self.default_fg;
-            self.current_bg = self.default_bg;
-            self.current_style = 0;
-            return;
-        }
-
-        let mut i = 0;
-        while i < grouped_params.len() {
-            let group = grouped_params[i];
-            let code = group.first().copied().unwrap_or(0);
-
-            match code {
-                0 => {
-                    self.current_fg = self.default_fg;
-                    self.current_bg = self.default_bg;
-                    self.current_style = 0;
-                }
-                1 => self.current_style |= style::BOLD,
-                2 => self.current_style |= style::DIM,
-                3 => self.current_style |= style::ITALIC,
-                4 => self.current_style |= style::UNDERLINE,
-                5 | 6 => self.current_style |= style::BLINK,
-                7 => self.current_style |= style::REVERSE,
-                8 => self.current_style |= style::HIDDEN,
-                9 => self.current_style |= style::STRIKETHROUGH,
-                21 | 22 => self.current_style &= !(style::BOLD | style::DIM),
-                23 => self.current_style &= !style::ITALIC,
-                24 => self.current_style &= !style::UNDERLINE,
-                25 => self.current_style &= !style::BLINK,
-                27 => self.current_style &= !style::REVERSE,
-                28 => self.current_style &= !style::HIDDEN,
-                29 => self.current_style &= !style::STRIKETHROUGH,
-
-                // Standard foreground (30–37, 39)
-                30 => self.current_fg = self.palette_256[0],
-                31 => self.current_fg = self.palette_256[1],
-                32 => self.current_fg = self.palette_256[2],
-                33 => self.current_fg = self.palette_256[3],
-                34 => self.current_fg = self.palette_256[4],
-                35 => self.current_fg = self.palette_256[5],
-                36 => self.current_fg = self.palette_256[6],
-                37 => self.current_fg = self.palette_256[7],
-                39 => self.current_fg = self.default_fg,
-
-                // Extended foreground: 38;5;n  or  38;2;r;g;b
-                38 => {
-                    // Colon-form SGR can arrive as one grouped parameter,
-                    // e.g. 38:2::R:G:B.
-                    if group.len() > 1 {
-                        if let Some(color) =
-                            parse_sgr_extended_color_group(group, &self.palette_256)
-                        {
-                            self.current_fg = color;
-                        }
-                    } else {
-                        match grouped_params
-                            .get(i + 1)
-                            .and_then(|g| g.first())
-                            .copied()
-                            .unwrap_or(0)
-                        {
-                            5 if i + 2 < grouped_params.len() => {
-                                let n = grouped_params[i + 2].first().copied().unwrap_or(0);
-                                self.current_fg = self.palette_256[clamp_u16_to_u8(n) as usize];
-                                i += 2;
-                            }
-                            2 if i + 4 < grouped_params.len() => {
-                                let r = grouped_params[i + 2].first().copied().unwrap_or(0);
-                                let g = grouped_params[i + 3].first().copied().unwrap_or(0);
-                                let b = grouped_params[i + 4].first().copied().unwrap_or(0);
-                                self.current_fg = Color::rgb(
-                                    clamp_u16_to_u8(r),
-                                    clamp_u16_to_u8(g),
-                                    clamp_u16_to_u8(b),
-                                );
-                                i += 4;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // Standard background (40–47, 49)
-                40 => self.current_bg = self.palette_256[0],
-                41 => self.current_bg = self.palette_256[1],
-                42 => self.current_bg = self.palette_256[2],
-                43 => self.current_bg = self.palette_256[3],
-                44 => self.current_bg = self.palette_256[4],
-                45 => self.current_bg = self.palette_256[5],
-                46 => self.current_bg = self.palette_256[6],
-                47 => self.current_bg = self.palette_256[7],
-                49 => self.current_bg = self.default_bg,
-
-                // Extended background: 48;5;n  or  48;2;r;g;b
-                48 => {
-                    if group.len() > 1 {
-                        if let Some(color) =
-                            parse_sgr_extended_color_group(group, &self.palette_256)
-                        {
-                            self.current_bg = color;
-                        }
-                    } else {
-                        match grouped_params
-                            .get(i + 1)
-                            .and_then(|g| g.first())
-                            .copied()
-                            .unwrap_or(0)
-                        {
-                            5 if i + 2 < grouped_params.len() => {
-                                let n = grouped_params[i + 2].first().copied().unwrap_or(0);
-                                self.current_bg = self.palette_256[clamp_u16_to_u8(n) as usize];
-                                i += 2;
-                            }
-                            2 if i + 4 < grouped_params.len() => {
-                                let r = grouped_params[i + 2].first().copied().unwrap_or(0);
-                                let g = grouped_params[i + 3].first().copied().unwrap_or(0);
-                                let b = grouped_params[i + 4].first().copied().unwrap_or(0);
-                                self.current_bg = Color::rgb(
-                                    clamp_u16_to_u8(r),
-                                    clamp_u16_to_u8(g),
-                                    clamp_u16_to_u8(b),
-                                );
-                                i += 4;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // Bright foreground (90–97)
-                90 => self.current_fg = self.palette_256[8],
-                91 => self.current_fg = self.palette_256[9],
-                92 => self.current_fg = self.palette_256[10],
-                93 => self.current_fg = self.palette_256[11],
-                94 => self.current_fg = self.palette_256[12],
-                95 => self.current_fg = self.palette_256[13],
-                96 => self.current_fg = self.palette_256[14],
-                97 => self.current_fg = self.palette_256[15],
-
-                // Bright background (100–107)
-                100 => self.current_bg = self.palette_256[8],
-                101 => self.current_bg = self.palette_256[9],
-                102 => self.current_bg = self.palette_256[10],
-                103 => self.current_bg = self.palette_256[11],
-                104 => self.current_bg = self.palette_256[12],
-                105 => self.current_bg = self.palette_256[13],
-                106 => self.current_bg = self.palette_256[14],
-                107 => self.current_bg = self.palette_256[15],
-
-                _ => {}
-            }
-            i += 1;
-        }
-    }
-}
-
-fn clamp_u16_to_u8(v: u16) -> u8 {
-    v.min(u8::MAX as u16) as u8
-}
-
-fn parse_sgr_extended_color_group(group: &[u16], palette_256: &[Color; 256]) -> Option<Color> {
-    match group.get(1).copied() {
-        // 38:5:n or 48:5:n
-        Some(5) => group
-            .get(2)
-            .copied()
-            .map(clamp_u16_to_u8)
-            .map(|idx| palette_256[idx as usize]),
-        // 38:2:R:G:B, 38:2::R:G:B, or 38:2:color_space:R:G:B
-        Some(2) => {
-            if group.len() >= 6 {
-                Some(Color::rgb(
-                    clamp_u16_to_u8(group[3]),
-                    clamp_u16_to_u8(group[4]),
-                    clamp_u16_to_u8(group[5]),
-                ))
-            } else if group.len() >= 5 {
-                Some(Color::rgb(
-                    clamp_u16_to_u8(group[2]),
-                    clamp_u16_to_u8(group[3]),
-                    clamp_u16_to_u8(group[4]),
-                ))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-// ─── Color helpers ────────────────────────────────────────────────────────────
-
-fn default_palette_256() -> [Color; 256] {
-    let mut palette = [Color::rgb(0, 0, 0); 256];
-    for i in 0..=u8::MAX {
-        palette[i as usize] = xterm_color_from_256(i);
-    }
-    palette
-}
-
-fn xterm_color_from_256(n: u8) -> Color {
-    match n {
-        0 => Color::rgb(0, 0, 0),
-        1 => Color::rgb(205, 0, 0),
-        2 => Color::rgb(0, 205, 0),
-        3 => Color::rgb(205, 205, 0),
-        4 => Color::rgb(0, 0, 238),
-        5 => Color::rgb(205, 0, 205),
-        6 => Color::rgb(0, 205, 205),
-        7 => Color::rgb(229, 229, 229),
-        8 => Color::rgb(127, 127, 127),
-        9 => Color::rgb(255, 85, 85),
-        10 => Color::rgb(85, 255, 85),
-        11 => Color::rgb(255, 255, 85),
-        12 => Color::rgb(85, 85, 255),
-        13 => Color::rgb(255, 85, 255),
-        14 => Color::rgb(85, 255, 255),
-        15 => Color::rgb(255, 255, 255),
-        16..=231 => {
-            let n = n - 16;
-            let b = n % 6;
-            let g = (n / 6) % 6;
-            let r = n / 36;
-            let to_val = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
-            Color::rgb(to_val(r), to_val(g), to_val(b))
-        }
-        232..=255 => {
-            let v = 8 + (n - 232) * 10;
-            Color::rgb(v, v, v)
-        }
-    }
-}
-
-/// Parse an X11 / xterm color specification such as `#rrggbb` or `rgb:rr/gg/bb`.
-fn parse_color_spec(s: &str) -> Option<Color> {
-    let s = s.trim();
-    if let Some(hex) = s.strip_prefix('#') {
-        // #rgb or #rrggbb
-        match hex.len() {
-            3 => {
-                let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
-                let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?;
-                let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?;
-                Some(Color::rgb(r, g, b))
-            }
-            6 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-                Some(Color::rgb(r, g, b))
-            }
-            _ => None,
-        }
-    } else if let Some(rest) = s.strip_prefix("rgb:") {
-        // rgb:rr/gg/bb  (each component 1–4 hex digits; we take the top 2)
-        let parts: Vec<&str> = rest.split('/').collect();
-        if parts.len() != 3 {
-            return None;
-        }
-        let component = |p: &str| -> Option<u8> {
-            let clamped = &p[..p.len().min(2)];
-            u8::from_str_radix(clamped, 16).ok()
-        };
-        Some(Color::rgb(
-            component(parts[0])?,
-            component(parts[1])?,
-            component(parts[2])?,
-        ))
-    } else {
-        None
-    }
-}
-
-fn charset_from_designator(designator: u8) -> Charset {
-    match designator {
-        b'0' => Charset::DecSpecialGraphics,
-        _ => Charset::Ascii,
-    }
-}
-
-fn map_dec_special_graphics(c: char) -> char {
-    match c {
-        'j' => '┘',
-        'k' => '┐',
-        'l' => '┌',
-        'm' => '└',
-        'n' => '┼',
-        'q' => '─',
-        't' => '├',
-        'u' => '┤',
-        'v' => '┴',
-        'w' => '┬',
-        'x' => '│',
-        'y' => '≤',
-        'z' => '≥',
-        '{' => 'π',
-        '|' => '≠',
-        '}' => '£',
-        '~' => '·',
-        _ => c,
-    }
-}
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn term() -> Terminal {
-        Terminal::new()
-    }
-
-    #[test]
-    fn test_bold_flag() {
-        let mut t = term();
-        t.process(b"\x1b[1mA");
-        assert!(t.performer.grid[0][0].style & style::BOLD != 0);
-    }
-
-    #[test]
-    fn test_reset_bold() {
-        let mut t = term();
-        t.process(b"\x1b[1mA\x1b[22mB");
-        assert!(t.performer.grid[0][0].style & style::BOLD != 0);
-        assert!(t.performer.grid[0][1].style & style::BOLD == 0);
-    }
-
-    #[test]
-    fn test_color() {
-        let mut t = term();
-        t.process(b"\x1b[31mR\x1b[32mG");
-        assert_eq!(t.performer.grid[0][0].fg, Color::rgb(205, 0, 0));
-        assert_eq!(t.performer.grid[0][1].fg, Color::rgb(0, 205, 0));
-    }
-
-    #[test]
-    fn test_cursor_movement() {
-        let mut t = term();
-        t.process(b"\x1b[5;10H"); // row 5, col 10 (1-based)
-        assert_eq!(t.performer.cursor_y, 4);
-        assert_eq!(t.performer.cursor_x, 9);
-    }
-
-    #[test]
-    fn test_auto_wrap() {
-        let mut t = term();
-        // fill exactly 80 chars then one more
-        let line: Vec<u8> = b"A".repeat(COLS);
-        t.process(&line);
-        assert!(t.performer.pending_wrap);
-        t.process(b"B");
-        assert_eq!(t.performer.cursor_y, 1);
-        assert_eq!(t.performer.cursor_x, 1);
-        assert_eq!(t.performer.grid[1][0].c, 'B');
-    }
-
-    #[test]
-    fn test_scroll_up_on_newline() {
-        let mut t = term();
-        // Move to last row and emit a newline
-        t.process(b"\x1b[24;1H\n");
-        assert_eq!(t.performer.cursor_y, ROWS - 1);
-        assert_eq!(t.performer.scrollback.len(), 1);
-    }
-
-    #[test]
-    fn test_save_restore_cursor() {
-        let mut t = term();
-        t.process(b"\x1b[3;5H"); // move to 3,5
-        t.process(b"\x1b7"); // DECSC save
-        t.process(b"\x1b[1;1H"); // move elsewhere
-        t.process(b"\x1b8"); // DECRC restore
-        assert_eq!(t.performer.cursor_y, 2);
-        assert_eq!(t.performer.cursor_x, 4);
-    }
-
-    #[test]
-    fn test_alt_screen() {
-        let mut t = term();
-        t.process(b"hello");
-        t.process(b"\x1b[?1049h"); // enter alt
-        assert!(t.performer.in_alt_screen);
-        assert_eq!(t.performer.grid[0][0].c, ' '); // blank alt screen
-        t.process(b"\x1b[?1049l"); // exit alt
-        assert!(!t.performer.in_alt_screen);
-        assert_eq!(t.performer.grid[0][0].c, 'h'); // original content back
-    }
-
-    #[test]
-    fn test_cursor_visibility() {
-        let mut t = term();
-        t.process(b"\x1b[?25l");
-        assert!(!t.performer.cursor_visible);
-        t.process(b"\x1b[?25h");
-        assert!(t.performer.cursor_visible);
-    }
-
-    #[test]
-    fn test_scroll_region() {
-        let mut t = term();
-        t.process(b"\x1b[5;10r"); // set scroll region rows 5–10
-        assert_eq!(t.performer.scroll_top, 4);
-        assert_eq!(t.performer.scroll_bottom, 9);
-        // Cursor should home
-        assert_eq!(t.performer.cursor_y, 0);
-        assert_eq!(t.performer.cursor_x, 0);
-    }
-
-    #[test]
-    fn test_partial_top_anchored_scroll_region_does_not_shift_rows_below_region() {
-        let mut t = term();
-
-        // Put a marker below the scroll region (row 11, 1-based).
-        t.process(b"\x1b[11;1HZ");
-
-        // Scroll only rows 1..10.
-        t.process(b"\x1b[1;10r");
-        t.process(b"\x1b[10;1H\n");
-
-        // Row 11 should remain untouched by scrolling inside rows 1..10.
-        assert_eq!(t.performer.grid[10][0].c, 'Z');
-    }
-
-    #[test]
-    fn test_erase_line() {
-        let mut t = term();
-        t.process(b"Hello\x1b[2K"); // write then erase whole line
-        for x in 0..COLS {
-            assert_eq!(t.performer.grid[0][x].c, ' ');
-        }
-    }
-
-    #[test]
-    fn test_erase_display_full_screen() {
-        let mut t = term();
-        t.process(b"Hello");
-        t.process(b"\x1b[2J");
-        for row in 0..ROWS {
-            for col in 0..COLS {
-                assert_eq!(t.performer.grid[row][col].c, ' ');
-            }
-        }
-        assert_eq!(t.performer.cursor_x, 0);
-        assert_eq!(t.performer.cursor_y, 0);
-    }
-
-    #[test]
-    fn test_insert_line_once() {
-        let mut t = term();
-        t.process(b"\x1b[1;1HA");
-        t.process(b"\x1b[2;1HB");
-        t.process(b"\x1b[3;1HC");
-
-        t.process(b"\x1b[2;1H\x1b[1L");
-
-        assert_eq!(t.performer.grid[0][0].c, 'A');
-        assert_eq!(t.performer.grid[1][0].c, ' ');
-        assert_eq!(t.performer.grid[2][0].c, 'B');
-        assert_eq!(t.performer.grid[3][0].c, 'C');
-    }
-
-    #[test]
-    fn test_256_color() {
-        let mut t = term();
-        t.process(b"\x1b[38;5;196m"); // bright red index 196
-        // 196 = 16 + 36*5 + 6*0 + 0  → r=5,g=0,b=0 → rgb(255,0,0)
-        assert_eq!(t.performer.current_fg, Color::rgb(255, 0, 0));
-    }
-
-    #[test]
-    fn test_truecolor() {
-        let mut t = term();
-        t.process(b"\x1b[38;2;10;20;30m");
-        assert_eq!(t.performer.current_fg, Color::rgb(10, 20, 30));
-    }
-
-    #[test]
-    fn test_truecolor_colon_form() {
-        let mut t = term();
-        t.process(b"\x1b[38:2::10:20:30m");
-        assert_eq!(t.performer.current_fg, Color::rgb(10, 20, 30));
-    }
-
-    #[test]
-    fn test_reverse_index() {
-        let mut t = term();
-        t.process(b"\x1b[3;1H"); // row 3
-        t.process(b"\x1bM"); // RI: should move up without scroll
-        assert_eq!(t.performer.cursor_y, 1);
-    }
-
-    #[test]
-    fn test_ris_reset() {
-        let mut t = term();
-        t.process(b"\x1b[1mA\x1bc"); // bold A then RIS
-        assert_eq!(t.performer.current_style, 0);
-        assert_eq!(t.performer.cursor_x, 0);
-        assert_eq!(t.performer.cursor_y, 0);
-    }
-
-    #[test]
-    fn test_dec_special_graphics_shift() {
-        let mut t = term();
-        // Designate G1 as DEC special graphics, switch to G1 (SO), then back to G0 (SI).
-        t.process(b"\x1b)0\x0eqx\x0fqq");
-        assert_eq!(t.performer.grid[0][0].c, '─');
-        assert_eq!(t.performer.grid[0][1].c, '│');
-        assert_eq!(t.performer.grid[0][2].c, 'q');
-        assert_eq!(t.performer.grid[0][3].c, 'q');
-    }
-
-    #[test]
-    fn test_visible_rows_with_no_scrollback_returns_bottom_of_grid() {
-        let t = term();
-        let rows = t.visible_rows(0, 2);
-        assert_eq!(rows.len(), 2);
-        // With a fresh terminal, grid is blank; check we got the last two grid rows.
-        assert_eq!(rows[0].len(), COLS);
-        assert_eq!(rows[1].len(), COLS);
-        // Pointer identity isn't stable here; check content is blank space.
-        assert_eq!(rows[0][0].c, ' ');
-        assert_eq!(rows[1][0].c, ' ');
-    }
-
-    #[test]
-    fn test_visible_rows_with_scrollback_offset_shows_scrollback() {
-        let mut t = term();
-        // Force at least one scrollback line.
-        t.process(b"\x1b[24;1H\n");
-        assert_eq!(t.performer.scrollback.len(), 1);
-
-        // When scrolled up, visible window should include scrollback row.
-        let rows = t.visible_rows(1, 1);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].len(), COLS);
-    }
-
-    #[test]
-    fn test_osc_title_rejoins_semicolons() {
-        let mut t = term();
-        // OSC 2;hello;world ST
-        t.process(b"\x1b]2;hello;world\x07");
-        assert_eq!(t.performer.title, "hello;world");
-    }
-
-    #[test]
-    fn test_parse_color_spec_hash_short_and_long() {
-        assert_eq!(parse_color_spec("#abc"), Some(Color::rgb(0xaa, 0xbb, 0xcc)));
-        assert_eq!(
-            parse_color_spec("#0a0b0c"),
-            Some(Color::rgb(0x0a, 0x0b, 0x0c))
-        );
-        assert_eq!(parse_color_spec("#zzzzzz"), None);
-    }
-
-    #[test]
-    fn test_parse_color_spec_rgb_colon_form() {
-        assert_eq!(
-            parse_color_spec("rgb:ff/00/80"),
-            Some(Color::rgb(0xff, 0x00, 0x80))
-        );
-        // Accept 1-digit components by taking top 2 chars (here: "a" -> "a").
-        assert_eq!(
-            parse_color_spec("rgb:a/b/c"),
-            Some(Color::rgb(0x0a, 0x0b, 0x0c))
-        );
-        assert_eq!(parse_color_spec("rgb:ff/00"), None);
-    }
-}
