@@ -12,7 +12,7 @@ use super::{
 const DEFAULT_ROWS: usize = 24;
 const DEFAULT_COLS: usize = 80;
 
-/// Saved cursor state (DECSC/DECRC and CSI s/u).
+// Saved cursor state (DECSC/DECRC and CSI s/u).
 #[derive(Clone, Copy)]
 struct SavedCursor {
     x: usize,

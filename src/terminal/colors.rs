@@ -1,6 +1,6 @@
 use glyphon::Color;
 
-pub(super) const MAX_SCROLLBACK: usize = 1000;
+pub(super) const MAX_SCROLLBACK: usize = 10000;
 
 // Defaults match the previous monolithic module.
 pub(super) const DEFAULT_FG: Color = Color::rgb(229, 229, 229);

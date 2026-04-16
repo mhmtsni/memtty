@@ -3,7 +3,6 @@ mod pty;
 mod terminal;
 mod ui;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     run().unwrap();
 }

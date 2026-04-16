@@ -1,8 +1,8 @@
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
 
 pub enum PtyInput {
     Data(Vec<u8>),
@@ -120,9 +120,9 @@ fi
     Ok(())
 }
 
-pub async fn run(
+pub fn run(
     tx_ui: mpsc::Sender<Vec<u8>>,
-    mut rx_ui: mpsc::UnboundedReceiver<PtyInput>,
+    rx_ui: mpsc::Receiver<PtyInput>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pty_system = native_pty_system();
     let pair = pty_system.openpty(PtySize {
@@ -153,13 +153,13 @@ pub async fn run(
     let master = pair.master;
 
     // --- Thread: Read from PTY, send to UI ---
-    tokio::task::spawn_blocking(move || {
+    std::thread::spawn(move || {
         let mut read_buf = [0u8; BUFF_CAPACITY];
         loop {
             match reader.read(&mut read_buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if tx_ui.blocking_send(read_buf[..n].to_vec()).is_err() {
+                    if tx_ui.send(read_buf[..n].to_vec()).is_err() {
                         break;
                     }
                 }
@@ -168,7 +168,7 @@ pub async fn run(
         }
     });
 
-    while let Some(input) = rx_ui.recv().await {
+    while let Ok(input) = rx_ui.recv() {
         match input {
             PtyInput::Data(bytes) => {
                 writer.write_all(&bytes)?;

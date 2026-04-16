@@ -1,7 +1,7 @@
 use std::{fmt::Debug, sync::Arc};
+use std::sync::mpsc::Sender;
 
 use arboard::Clipboard;
-use tokio::sync::mpsc::UnboundedSender;
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta},
@@ -46,7 +46,7 @@ const CURSOR_COLOR: glyphon::Color = glyphon::Color::rgb(255, 255, 255);
 pub struct Tab {
     pub id: usize,
     pub terminal: Terminal,
-    tx: Option<UnboundedSender<PtyInput>>,
+    tx: Option<Sender<PtyInput>>,
 }
 
 pub struct MyApp {
@@ -73,7 +73,7 @@ pub struct MyApp {
 impl MyApp {
     pub fn new(
         window: Arc<Window>,
-        tx_to_pty: UnboundedSender<PtyInput>,
+        tx_to_pty: Sender<PtyInput>,
         renderer: Renderer,
     ) -> Self {
         let mut app = Self {

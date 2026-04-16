@@ -1,7 +1,7 @@
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 
 use crate::{pty::PtyInput, ui::ui::Message};
-use tokio::sync::mpsc::UnboundedSender;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
@@ -316,18 +316,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 pub fn spawn_pty_for_tab(
     tab_id: usize,
     proxy: EventLoopProxy<Message>,
-) -> UnboundedSender<PtyInput> {
-    let (tx_to_pty, rx_from_ui) = tokio::sync::mpsc::unbounded_channel();
-    let (tx_to_ui, mut rx_from_pty) = tokio::sync::mpsc::channel(100);
+) -> Sender<PtyInput> {
+    let (tx_to_pty, rx_from_ui) = std::sync::mpsc::channel();
+    let (tx_to_ui, rx_from_pty) = std::sync::mpsc::channel();
 
-    tokio::spawn(async move {
-        let proxy_for_exit = proxy.clone();
-        tokio::spawn(async move {
-            let _ = crate::pty::run(tx_to_ui, rx_from_ui).await;
-            let _ = proxy_for_exit.send_event(Message::PtyExited(tab_id));
-        });
+    let proxy_for_exit = proxy.clone();
+    std::thread::spawn(move || {
+        let _ = crate::pty::run(tx_to_ui, rx_from_ui);
+        let _ = proxy_for_exit.send_event(Message::PtyExited(tab_id));
+    });
 
-        while let Some(data) = rx_from_pty.recv().await {
+    std::thread::spawn(move || {
+        while let Ok(data) = rx_from_pty.recv() {
             let _ = proxy.send_event(Message::PtyDataReceived(tab_id, data));
         }
     });
