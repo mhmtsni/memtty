@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use crate::{pty::PtyInput, ui::ui::Message};
 use winit::{
@@ -313,10 +314,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub fn spawn_pty_for_tab(
-    tab_id: usize,
-    proxy: EventLoopProxy<Message>,
-) -> Sender<PtyInput> {
+pub fn spawn_pty_for_tab(tab_id: usize, proxy: EventLoopProxy<Message>) -> Sender<PtyInput> {
+    const PTY_COALESCE_WINDOW: Duration = Duration::from_millis(1);
+    const PTY_MAX_BATCH_BYTES: usize = 512;
+
     let (tx_to_pty, rx_from_ui) = std::sync::mpsc::channel();
     let (tx_to_ui, rx_from_pty) = std::sync::mpsc::channel();
 
@@ -327,7 +328,21 @@ pub fn spawn_pty_for_tab(
     });
 
     std::thread::spawn(move || {
-        while let Ok(data) = rx_from_pty.recv() {
+        while let Ok(mut data) = rx_from_pty.recv() {
+            // Coalesce a short burst of PTY chunks so clear+payload updates are
+            // rendered together instead of as visible intermediate frames.
+            loop {
+                if data.len() >= PTY_MAX_BATCH_BYTES {
+                    break;
+                }
+
+                match rx_from_pty.recv_timeout(PTY_COALESCE_WINDOW) {
+                    Ok(next) => data.extend_from_slice(&next),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+
             let _ = proxy.send_event(Message::PtyDataReceived(tab_id, data));
         }
     });
