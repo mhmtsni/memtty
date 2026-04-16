@@ -143,9 +143,7 @@ impl ApplicationHandler<Message> for TerminalView {
         match event {
             Message::PtyDataReceived(tab_id, data) => {
                 if let Some(app) = self.app.as_mut() {
-                    if let Some(tab) = app.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                        tab.terminal.process(&data);
-                    }
+                    app.process_pty_data(tab_id, &data);
                 }
                 self.terminal_dirty = true;
                 self.request_redraw_if_needed();

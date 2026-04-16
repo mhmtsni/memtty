@@ -7,7 +7,7 @@ pub(super) struct DirtyInfo {
     pub needs_text_rebuild: bool,
 }
 
-/// Computes per-row dirty flags and the downstream rebuild decisions.
+// Computes per-row dirty flags and the downstream rebuild decisions.
 pub(super) fn compute_dirty_info(
     renderer: &Renderer,
     rows: &[&Vec<Cell>],

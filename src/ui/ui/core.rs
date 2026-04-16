@@ -90,6 +90,17 @@ impl MyApp {
         }
     }
 
+    pub(crate) fn process_pty_data(&mut self, tab_id: usize, data: &[u8]) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            let replies = tab.terminal.process(data);
+            if let Some(tx) = &tab.tx {
+                for reply in replies {
+                    let _ = tx.send(PtyInput::Data(reply));
+                }
+            }
+        }
+    }
+
     pub fn set_modifiers(&mut self, modifiers: ModifiersState) {
         self.modifiers = modifiers;
     }

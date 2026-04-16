@@ -31,8 +31,9 @@ impl Terminal {
         Self::default()
     }
 
-    pub fn process(&mut self, bytes: &[u8]) {
+    pub fn process(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
         self.parser.advance(&mut self.performer, bytes);
+        self.performer.drain_pty_replies()
     }
 
     /// Visible rows for rendering, honoring scroll offset (positive = scrolled up).

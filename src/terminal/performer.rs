@@ -5,8 +5,8 @@ use vte::Perform;
 
 use super::{
     cell::Cell,
-    charset::{charset_from_designator, map_dec_special_graphics, Charset},
-    colors::{default_palette_256, parse_color_spec, MAX_SCROLLBACK, DEFAULT_BG, DEFAULT_FG},
+    charset::{Charset, charset_from_designator, map_dec_special_graphics},
+    colors::{DEFAULT_BG, DEFAULT_FG, MAX_SCROLLBACK, default_palette_256, parse_color_spec},
 };
 
 const DEFAULT_ROWS: usize = 24;
@@ -100,6 +100,9 @@ pub struct Performer {
     pub(super) pending_wrap: bool,
     focus_enable: bool,
 
+    // Bytes that should be written back to the PTY (DA/DSR replies, etc.).
+    pty_replies: Vec<Vec<u8>>,
+
     pub title: String,
 }
 
@@ -150,6 +153,7 @@ impl Default for Performer {
             use_g1_charset: false,
             pending_wrap: false,
             focus_enable: false,
+            pty_replies: Vec::new(),
         }
     }
 }
@@ -159,6 +163,14 @@ impl Default for Performer {
 impl Performer {
     pub fn focus_reporting_enabled(&self) -> bool {
         self.focus_enable
+    }
+
+    pub fn drain_pty_replies(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.pty_replies)
+    }
+
+    fn queue_pty_reply(&mut self, bytes: Vec<u8>) {
+        self.pty_replies.push(bytes);
     }
 
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
@@ -616,14 +628,33 @@ impl Perform for Performer {
                         self.set_dec_mode(mode as usize, false);
                     }
                 }
+                // DEC DSR replies.
+                'n' => {
+                    for &code in &params_vec {
+                        match code {
+                            5 => self.queue_pty_reply(b"\x1b[?0n".to_vec()),
+                            6 => {
+                                let row = self.cursor_y + 1;
+                                let col = self.cursor_x + 1;
+                                self.queue_pty_reply(
+                                    format!("\x1b[?{};{}R", row, col).into_bytes(),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // DECTCEM aliases handled inside set_dec_mode (mode 25)
                 _ => {}
             }
             return;
         }
 
-        // CSI > — secondary DA / xterm version (respond with nothing, stub)
+        // CSI > — secondary DA / xterm version
         if intermediates.first() == Some(&b'>') {
+            if action == 'c' {
+                self.queue_pty_reply(b"\x1b[>0;0;0c".to_vec());
+            }
             return;
         }
 
@@ -879,11 +910,24 @@ impl Perform for Performer {
             }
 
             // ── Device status report (DSR) ──────────────────────────────────
-            // We can't write back to the pty from here without a channel; stub.
-            'n' => {}
+            'n' => {
+                for &code in &params_vec {
+                    match code {
+                        5 => self.queue_pty_reply(b"\x1b[0n".to_vec()),
+                        6 => {
+                            let row = self.cursor_y + 1;
+                            let col = self.cursor_x + 1;
+                            self.queue_pty_reply(format!("\x1b[{};{}R", row, col).into_bytes());
+                        }
+                        _ => {}
+                    }
+                }
+            }
 
             // ── Device attributes (DA) ──────────────────────────────────────
-            'c' => {}
+            'c' => {
+                self.queue_pty_reply(b"\x1b[?1;2c".to_vec());
+            }
 
             // ── SGR — Select Graphic Rendition ─────────────────────────────
             'm' => {
@@ -997,13 +1041,7 @@ impl Perform for Performer {
 
     // ── DCS sequences ───────────────────────────────────────────────────────
 
-    fn hook(
-        &mut self,
-        _params: &vte::Params,
-        _intermediates: &[u8],
-        _ignore: bool,
-        _action: char,
-    ) {
+    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
         // DCS entry — e.g. DECRQSS, tmux passthrough
     }
 
@@ -1015,4 +1053,3 @@ impl Perform for Performer {
         // DCS end
     }
 }
-
