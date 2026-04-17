@@ -108,6 +108,7 @@ impl MyApp {
                         self.dragging_scroll_indicator = true;
                         self.drag_start_y = self.mouse_position.y;
                         self.drag_start_scroll_offset = self.scroll_offset;
+                        self.mark_scroll_indicator_interaction();
                     } else {
                         self.handle_tab_click(self.mouse_position);
                     }
@@ -153,7 +154,7 @@ impl MyApp {
         self.sync_renderer_from_terminal(true);
     }
 
-    fn handle_text_selection(&mut self, position: PhysicalPosition<f64>) {}
+    // fn handle_text_selection(&mut self, position: PhysicalPosition<f64>) {}
 
     fn handle_scroll_indicator_drag(&mut self, position: PhysicalPosition<f64>) {
         let Some(active_tab) = self.normalize_active_tab() else {
@@ -181,9 +182,13 @@ impl MyApp {
         let offset_delta = -(ratio_delta * scrollback_len) as i32;
 
         let max_offset = scrollback_len as i32;
-        self.scroll_offset = (self.drag_start_scroll_offset + offset_delta)
+        let new_offset = (self.drag_start_scroll_offset + offset_delta)
             .max(0)
             .min(max_offset);
+        if new_offset != self.scroll_offset {
+            self.scroll_offset = new_offset;
+            self.mark_scroll_indicator_interaction();
+        }
 
         self.sync_renderer_from_terminal(false);
     }

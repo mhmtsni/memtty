@@ -39,17 +39,30 @@ impl TerminalView {
 impl ApplicationHandler<Message> for TerminalView {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.app.is_some() {
-            let (blink_changed, blink_deadline) = {
+            let (blink_changed, blink_deadline, fade_changed, fade_deadline) = {
                 let app = self.app.as_mut().expect("app checked as some");
-                let changed = app.update_cursor_blink();
-                (changed, app.next_blink_deadline())
+                let blink_changed = app.update_cursor_blink();
+                let fade_changed = app.update_scroll_indicator_fade();
+                (
+                    blink_changed,
+                    app.next_blink_deadline(),
+                    fade_changed,
+                    app.next_scroll_indicator_deadline(),
+                )
             };
 
-            if blink_changed {
+            if blink_changed || fade_changed {
                 self.request_redraw_if_needed();
             }
 
-            if let Some(deadline) = blink_deadline {
+            let next_deadline = match (blink_deadline, fade_deadline) {
+                (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+
+            if let Some(deadline) = next_deadline {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             } else {
                 event_loop.set_control_flow(ControlFlow::Wait);

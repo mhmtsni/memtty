@@ -69,6 +69,8 @@ pub struct MyApp {
     dragging_scroll_indicator: bool,
     drag_start_y: f64,
     drag_start_scroll_offset: i32,
+    scroll_indicator_last_interaction: Option<Instant>,
+    scroll_indicator_last_alpha: f32,
 }
 
 impl MyApp {
@@ -95,6 +97,8 @@ impl MyApp {
             dragging_scroll_indicator: false,
             drag_start_y: 0.0,
             drag_start_scroll_offset: 0,
+            scroll_indicator_last_interaction: None,
+            scroll_indicator_last_alpha: 0.0,
         };
 
         app.sync_renderer_from_terminal(true);

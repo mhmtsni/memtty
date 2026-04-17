@@ -1,6 +1,66 @@
 use super::*;
 
+const SCROLL_INDICATOR_FADE_DELAY: Duration = Duration::from_millis(900);
+const SCROLL_INDICATOR_FADE_DURATION: Duration = Duration::from_millis(260);
+const SCROLL_INDICATOR_FADE_FRAME: Duration = Duration::from_millis(16);
+
 impl MyApp {
+    pub(super) fn mark_scroll_indicator_interaction(&mut self) {
+        self.scroll_indicator_last_interaction = Some(Instant::now());
+        self.scroll_indicator_last_alpha = 1.0;
+    }
+
+    fn scroll_indicator_alpha_at(&self, now: Instant) -> f32 {
+        let Some(last_interaction) = self.scroll_indicator_last_interaction else {
+            return 0.0;
+        };
+
+        let elapsed = now.saturating_duration_since(last_interaction);
+        if elapsed <= SCROLL_INDICATOR_FADE_DELAY {
+            return 1.0;
+        }
+
+        let fade_elapsed = elapsed - SCROLL_INDICATOR_FADE_DELAY;
+        if fade_elapsed >= SCROLL_INDICATOR_FADE_DURATION {
+            return 0.0;
+        }
+
+        let progress = fade_elapsed.as_secs_f32() / SCROLL_INDICATOR_FADE_DURATION.as_secs_f32();
+        (1.0 - progress).clamp(0.0, 1.0)
+    }
+
+    pub(crate) fn update_scroll_indicator_fade(&mut self) -> bool {
+        let new_alpha = self.scroll_indicator_alpha_at(Instant::now());
+
+        if (new_alpha - self.scroll_indicator_last_alpha).abs() < 0.01 {
+            return false;
+        }
+
+        self.scroll_indicator_last_alpha = new_alpha;
+        self.sync_renderer_from_terminal(false);
+
+        if new_alpha <= 0.0 {
+            self.scroll_indicator_last_interaction = None;
+        }
+
+        true
+    }
+
+    pub(crate) fn next_scroll_indicator_deadline(&self) -> Option<Instant> {
+        let last_interaction = self.scroll_indicator_last_interaction?;
+        let now = Instant::now();
+        let fade_start = last_interaction + SCROLL_INDICATOR_FADE_DELAY;
+        let fade_end = fade_start + SCROLL_INDICATOR_FADE_DURATION;
+
+        if now < fade_start {
+            Some(fade_start)
+        } else if now < fade_end {
+            Some(now + SCROLL_INDICATOR_FADE_FRAME)
+        } else {
+            None
+        }
+    }
+
     pub(super) fn visible_scroll_indicator_info(&self) -> Option<ScrollIndicatorRenderInfo> {
         let tab = self.tabs.get(self.active_tab)?;
         let scrollback_len = tab.terminal.performer.scrollback.len() as f32;
@@ -24,11 +84,14 @@ impl MyApp {
         let position_ratio = 1.0 - (scroll_offset / max_scroll);
         let scrollable_track = (usable_height - indicator_height).max(0.0);
         let position_y = tab_bar_height + scrollable_track * position_ratio;
+        let opacity = self.scroll_indicator_last_alpha.clamp(0.0, 1.0);
 
         Some(ScrollIndicatorRenderInfo {
             height: indicator_height,
-            visible: true,
+            visible: opacity > 0.0,
+            opacity,
             position_y,
+            in_alt_screen: tab.terminal.performer.in_alt_screen,
         })
     }
 
@@ -75,7 +138,11 @@ impl MyApp {
 
         // Normal terminal: scrollback
         let max_offset = tab.terminal.performer.scrollback.len() as i32;
-        self.scroll_offset = (self.scroll_offset + scroll_amount).max(0).min(max_offset);
+        let new_offset = (self.scroll_offset + scroll_amount).max(0).min(max_offset);
+        if new_offset != self.scroll_offset {
+            self.scroll_offset = new_offset;
+            self.mark_scroll_indicator_interaction();
+        }
         self.sync_renderer_from_terminal(false);
     }
 }

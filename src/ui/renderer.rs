@@ -78,8 +78,10 @@ pub struct TabRenderInfo {
 #[derive(Clone)]
 pub struct ScrollIndicatorRenderInfo {
     pub visible: bool,
+    pub opacity: f32,
     pub position_y: f32,
     pub height: f32,
+    pub in_alt_screen: bool,
 }
 
 #[repr(C)]
@@ -452,6 +454,18 @@ impl Renderer {
         self.tabs_need_shape = true;
 
         if !dirty_info.any_dirty {
+            // Keep overlay layers (cursor/tab/scroll indicator) responsive even
+            // when text/background content did not change.
+            if self.solid_vertices.len() > self.background_vertex_count {
+                self.solid_vertices.truncate(self.background_vertex_count);
+            }
+
+            renderer_cursor::render_cursor_overlay(self, cursor);
+            renderer_tab::render_tab_overlay(self, tabs);
+            renderer_scroll_indicator::render_scroll_indicator_overlay(self, scroll_indicator);
+
+            self.last_cursor = new_cursor_state;
+            self.full_rebuild = false;
             return;
         }
 
