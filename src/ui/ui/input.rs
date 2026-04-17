@@ -58,6 +58,12 @@ impl MyApp {
                         }
                         return;
                     }
+                    "c" => {
+                        if self.copy_selection_to_clipboard() {
+                            return;
+                        }
+                        return;
+                    }
                     _ => {
                         if c.len() == 1 {
                             if let Some(ch) = c.chars().next() {
@@ -178,4 +184,3 @@ impl MyApp {
         }
     }
 }
-

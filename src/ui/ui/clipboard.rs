@@ -1,6 +1,22 @@
 use super::*;
 
 impl MyApp {
+    pub(super) fn copy_selection_to_clipboard(&mut self) -> bool {
+        // let Some(text) = self.selected_text() else {
+        //     return false;
+        // };
+        //
+        // let Ok(mut clipboard) = Clipboard::new() else {
+        //     return false;
+        // };
+        //
+        // if clipboard.set_text(text).is_err() {
+        //     return false;
+        // }
+        //
+        // true
+        false
+    }
     pub(super) fn handle_paste(&mut self) {
         let Ok(mut clipboard) = Clipboard::new() else {
             return;

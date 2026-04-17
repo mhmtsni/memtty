@@ -19,7 +19,7 @@ const LINE_HEIGHT_FACTOR: f32 = 1.2;
 const CELL_WIDTH_FACTOR: f32 = 0.55;
 const INITIAL_SOLID_VERTEX_CAPACITY: usize = 2048;
 const CELL_WIDTH_SAMPLE_COUNT: usize = 32;
-pub const TAB_HEIGHT: usize = 50;
+pub const TAB_HEIGHT: usize = 70;
 pub const INDICATOR_WIDTH: f32 = 12.0;
 pub const TERMINAL_PADDING_X: f32 = 8.0;
 pub const TERMINAL_PADDING_Y: f32 = 1.0;
@@ -133,8 +133,8 @@ pub struct Renderer {
     text_multisample: MultisampleState,
     pub width: u32,
     pub height: u32,
-    line_height: f32,
-    cell_width: f32,
+    pub line_height: f32,
+    pub cell_width: f32,
     tab_buffer: Vec<Buffer>,
     tabs_cache: Vec<TabRenderInfo>,
     tabs_need_shape: bool,
@@ -432,6 +432,8 @@ impl Renderer {
             let tab = &self.tabs_cache[i];
             let color = if tab.active {
                 Color::rgb(229, 229, 229)
+            } else if tab.is_hovered {
+                Color::rgb(255, 255, 255)
             } else {
                 Color::rgb(160, 160, 160)
             };
@@ -707,6 +709,9 @@ impl Renderer {
 }
 
 fn effective_colors(cell: &Cell) -> (Color, Color) {
+    if cell.is_selected {
+        return (Color::rgb(12, 16, 24), Color::rgb(176, 212, 255));
+    }
     if cell.style & style::REVERSE != 0 {
         (cell.bg, cell.fg)
     } else {

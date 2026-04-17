@@ -10,7 +10,7 @@ pub enum PtyInput {
     Shutdown,
 }
 
-const BUFF_CAPACITY: usize = 1024;
+const BUFF_CAPACITY: usize = 16 * 1024;
 
 fn unique_temp_dir(prefix: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let nanos = SystemTime::now()
@@ -121,7 +121,7 @@ fi
 }
 
 pub fn run(
-    tx_ui: mpsc::Sender<Vec<u8>>,
+    tx_ui: mpsc::SyncSender<Vec<u8>>,
     rx_ui: mpsc::Receiver<PtyInput>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pty_system = native_pty_system();
@@ -133,7 +133,7 @@ pub fn run(
     })?;
 
     // Spawn the shell (default to zsh; honor $SHELL when present)
-    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "zsh".to_string());
+    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "fish".to_string());
     let mut cmd = CommandBuilder::new(shell_path.clone());
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");

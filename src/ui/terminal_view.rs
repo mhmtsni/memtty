@@ -317,9 +317,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 pub fn spawn_pty_for_tab(tab_id: usize, proxy: EventLoopProxy<Message>) -> Sender<PtyInput> {
     const PTY_COALESCE_WINDOW: Duration = Duration::from_millis(1);
     const PTY_MAX_BATCH_BYTES: usize = 512;
+    const PTY_OUTPUT_QUEUE_CAPACITY: usize = 512;
 
     let (tx_to_pty, rx_from_ui) = std::sync::mpsc::channel();
-    let (tx_to_ui, rx_from_pty) = std::sync::mpsc::channel();
+    // Bound PTY output buffering so background-heavy output cannot grow memory unbounded.
+    let (tx_to_ui, rx_from_pty) = std::sync::mpsc::sync_channel(PTY_OUTPUT_QUEUE_CAPACITY);
 
     let proxy_for_exit = proxy.clone();
     std::thread::spawn(move || {

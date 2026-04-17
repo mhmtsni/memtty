@@ -14,7 +14,7 @@ pub mod style {
 mod cell;
 mod charset;
 mod colors;
-mod performer;
+pub mod performer;
 mod sgr;
 
 pub use cell::Cell;

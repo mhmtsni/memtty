@@ -90,6 +90,7 @@ pub struct Performer {
     pub bracketed_paste: bool,
     /// Mouse tracking modes.
     pub mouse_mode: MouseMode,
+    pub sgr_mouse: bool,
 
     // G0/G1 charset designations and active GL selection (SI/SO).
     g0_charset: Charset,
@@ -139,6 +140,7 @@ impl Default for Performer {
             default_fg,
             title: String::new(),
             default_bg,
+            sgr_mouse: false,
             palette_256,
             current_fg: default_fg,
             current_bg: default_bg,
@@ -163,6 +165,25 @@ impl Default for Performer {
 impl Performer {
     pub fn focus_reporting_enabled(&self) -> bool {
         self.focus_enable
+    }
+
+    pub fn report_mouse(&mut self, x: usize, y: usize, button: u8, pressed: bool) {
+        if self.mouse_mode == MouseMode::None {
+            return;
+        }
+
+        let reply = if self.sgr_mouse {
+            let suffix = if pressed { 'M' } else { 'm' };
+            format!("\x1b[<{};{};{}{}", button, x + 1, y + 1, suffix)
+        } else {
+            // X10 encoding
+            let b = 32 + button;
+            let bx = 32 + (x + 1) as u8;
+            let by = 32 + (y + 1) as u8;
+            format!("\x1b[M{}{}{}", b as char, bx as char, by as char)
+        };
+
+        self.queue_pty_reply(reply.into_bytes());
     }
 
     pub fn drain_pty_replies(&mut self) -> Vec<Vec<u8>> {
@@ -317,6 +338,7 @@ impl Performer {
     // ── alt screen ──────────────────────────────────────────────────────────
 
     fn enter_alt_screen(&mut self) {
+        println!("Entering alt screen");
         if self.in_alt_screen {
             return;
         }
@@ -435,6 +457,14 @@ impl Performer {
             1004 => {
                 self.focus_enable = enable;
             }
+            1006 => {
+                println!(
+                    "SGR mouse mode {}",
+                    if enable { "enabled" } else { "disabled" }
+                );
+                self.sgr_mouse = !self.sgr_mouse
+            }
+
             1049 => {
                 if enable {
                     self.save_cursor();

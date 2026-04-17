@@ -1,5 +1,5 @@
-use std::{fmt::Debug, sync::Arc};
 use std::sync::mpsc::Sender;
+use std::{fmt::Debug, sync::Arc};
 
 use arboard::Clipboard;
 use winit::{
@@ -10,6 +10,7 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window},
 };
 
+use crate::terminal::performer::MouseMode;
 use crate::{
     pty::PtyInput,
     terminal::{CursorStyle, Terminal},
@@ -71,11 +72,7 @@ pub struct MyApp {
 }
 
 impl MyApp {
-    pub fn new(
-        window: Arc<Window>,
-        tx_to_pty: Sender<PtyInput>,
-        renderer: Renderer,
-    ) -> Self {
+    pub fn new(window: Arc<Window>, tx_to_pty: Sender<PtyInput>, renderer: Renderer) -> Self {
         let mut app = Self {
             full_screen: false,
             mouse_icon: CursorIcon::Text,
