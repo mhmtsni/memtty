@@ -338,7 +338,6 @@ impl Performer {
     // ── alt screen ──────────────────────────────────────────────────────────
 
     fn enter_alt_screen(&mut self) {
-        println!("Entering alt screen");
         if self.in_alt_screen {
             return;
         }
@@ -457,13 +456,7 @@ impl Performer {
             1004 => {
                 self.focus_enable = enable;
             }
-            1006 => {
-                println!(
-                    "SGR mouse mode {}",
-                    if enable { "enabled" } else { "disabled" }
-                );
-                self.sgr_mouse = !self.sgr_mouse
-            }
+            1006 => self.sgr_mouse = !self.sgr_mouse,
 
             1049 => {
                 if enable {

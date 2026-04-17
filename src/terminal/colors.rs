@@ -84,7 +84,7 @@ pub(super) fn parse_sgr_extended_color_group(
     }
 }
 
-/// Parse an X11 / xterm color specification such as `#rrggbb` or `rgb:rr/gg/bb`.
+// Parse an X11 / xterm color specification such as `#rrggbb` or `rgb:rr/gg/bb`.
 pub(super) fn parse_color_spec(s: &str) -> Option<Color> {
     let s = s.trim();
     if let Some(hex) = s.strip_prefix('#') {

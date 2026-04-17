@@ -34,6 +34,42 @@ impl MyApp {
             return true;
         }
 
+        // Mouse motion reporting (neovim drag selection için)
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            let mode = tab.terminal.performer.mouse_mode;
+            let should_report = match mode {
+                MouseMode::ButtonEvent => self.mouse_button_held.is_some(),
+                MouseMode::AnyEvent => true,
+                _ => false,
+            };
+
+            if should_report {
+                let cell_x = ((position.x - TERMINAL_PADDING_X as f64)
+                    / self.renderer.cell_width as f64) as usize;
+                let cell_y = ((position.y - TAB_HEIGHT as f64 - TERMINAL_PADDING_Y as f64)
+                    / self.renderer.line_height as f64) as usize;
+
+                let btn_code = match self.mouse_button_held {
+                    Some(MouseButton::Left) => 32u8, // motion modifier = +32
+                    Some(MouseButton::Middle) => 33,
+                    Some(MouseButton::Right) => 34,
+                    _ => 35, // no button held (AnyEvent)
+                };
+
+                tab.terminal
+                    .performer
+                    .report_mouse(cell_x, cell_y, btn_code, true);
+
+                if let Some(tx) = &tab.tx {
+                    for reply in tab.terminal.performer.drain_pty_replies() {
+                        let _ = tx.send(PtyInput::Data(reply));
+                    }
+                }
+
+                return true;
+            }
+        }
+
         if previous_hovered == new_hovered && !cursor_changed {
             return false;
         }

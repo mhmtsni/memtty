@@ -120,11 +120,6 @@ impl ApplicationHandler<Message> for TerminalView {
 
         let mut app = MyApp::new(window.clone(), tx_to_pty, renderer);
 
-        if let Some(family) = app.renderer.active_font_family_name() {
-            eprintln!("Using terminal font family: {family}");
-        } else {
-            eprintln!("Using terminal font family: system monospace fallback");
-        }
         app.handle_resize(size);
 
         let proxy = self.proxy.as_ref().unwrap().clone();

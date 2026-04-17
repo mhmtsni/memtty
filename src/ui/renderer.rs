@@ -170,10 +170,6 @@ struct CursorCacheKey {
 const CURSOR_STYLE_BLOCK: u8 = 0;
 
 impl Renderer {
-    pub fn active_font_family_name(&self) -> Option<&'static str> {
-        self.font_family_name
-    }
-
     pub fn new(
         device: &Device,
         queue: &Queue,

@@ -33,4 +33,3 @@ pub(super) fn map_dec_special_graphics(c: char) -> char {
         _ => c,
     }
 }
-

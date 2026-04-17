@@ -36,7 +36,7 @@ impl Terminal {
         self.performer.drain_pty_replies()
     }
 
-    /// Visible rows for rendering, honoring scroll offset (positive = scrolled up).
+    // Visible rows for rendering, honoring scroll offset (positive = scrolled up).
     pub fn visible_rows(&self, scroll_offset: i32, rows: usize) -> Vec<&Vec<Cell>> {
         if rows == 0 {
             return vec![];
