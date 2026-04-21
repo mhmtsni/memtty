@@ -3,11 +3,29 @@ use super::*;
 const SCROLL_INDICATOR_FADE_DELAY: Duration = Duration::from_millis(900);
 const SCROLL_INDICATOR_FADE_DURATION: Duration = Duration::from_millis(260);
 const SCROLL_INDICATOR_FADE_FRAME: Duration = Duration::from_millis(16);
+const SCROLL_INDICATOR_INTERACTION_THROTTLE: Duration = Duration::from_millis(90);
 
 impl MyApp {
     pub(super) fn mark_scroll_indicator_interaction(&mut self) {
         self.scroll_indicator_last_interaction = Some(Instant::now());
         self.scroll_indicator_last_alpha = 1.0;
+    }
+
+    pub(super) fn mark_scroll_indicator_interaction_throttled(&mut self) {
+        let now = Instant::now();
+        let should_refresh = match self.scroll_indicator_last_interaction {
+            None => true,
+            Some(last_interaction) => {
+                now.saturating_duration_since(last_interaction)
+                    >= SCROLL_INDICATOR_INTERACTION_THROTTLE
+                    || self.scroll_indicator_last_alpha < 0.99
+            }
+        };
+
+        if should_refresh {
+            self.scroll_indicator_last_interaction = Some(now);
+            self.scroll_indicator_last_alpha = 1.0;
+        }
     }
 
     fn scroll_indicator_alpha_at(&self, now: Instant) -> f32 {
@@ -84,6 +102,7 @@ impl MyApp {
         let position_ratio = 1.0 - (scroll_offset / max_scroll);
         let scrollable_track = (usable_height - indicator_height).max(0.0);
         let position_y = tab_bar_height + scrollable_track * position_ratio;
+
         let opacity = self.scroll_indicator_last_alpha.clamp(0.0, 1.0);
 
         Some(ScrollIndicatorRenderInfo {
@@ -92,6 +111,7 @@ impl MyApp {
             opacity,
             position_y,
             in_alt_screen: tab.terminal.performer.in_alt_screen,
+            is_mouse_on_indicator: false, // computed elsewhere
         })
     }
 
@@ -141,7 +161,7 @@ impl MyApp {
         let new_offset = (self.scroll_offset + scroll_amount).max(0).min(max_offset);
         if new_offset != self.scroll_offset {
             self.scroll_offset = new_offset;
-            self.mark_scroll_indicator_interaction();
+            self.mark_scroll_indicator_interaction_throttled();
         }
         self.sync_renderer_from_terminal(false);
     }

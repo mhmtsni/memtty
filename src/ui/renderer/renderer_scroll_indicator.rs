@@ -10,7 +10,9 @@ pub(super) fn render_scroll_indicator_overlay(
         return;
     };
 
-    if scroll_indicator.visible && !scroll_indicator.in_alt_screen {
+    if (scroll_indicator.visible && !scroll_indicator.in_alt_screen)
+        || scroll_indicator.is_mouse_on_indicator
+    {
         renderer.push_rect_pixels(
             renderer.width as f32 - INDICATOR_WIDTH - TERMINAL_PADDING_X as f32,
             scroll_indicator.position_y as f32,

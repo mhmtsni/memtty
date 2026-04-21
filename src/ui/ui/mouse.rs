@@ -22,10 +22,27 @@ impl MyApp {
     }
 
     pub fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>) -> bool {
-        let previous_hovered = self.tab_index_at_position(self.mouse_position);
-        let new_hovered = self.tab_index_at_position(position);
+        let previous_hovered_tab = self.tab_index_at_position(self.mouse_position);
+        let new_hovered_tab = self.tab_index_at_position(position);
 
         self.mouse_position = position;
+
+        let mut needs_redraw = false;
+
+        // 🔥 EDGE-BASED ACTIVATION (key fix)
+        let near_edge = position.x >= (self.renderer.width as f64 - 12.0);
+
+        if near_edge {
+            self.mark_scroll_indicator_interaction_throttled();
+            needs_redraw = true;
+        }
+
+        // Optional: precise hover detection (for cursor, etc.)
+        if let Some(info) = self.visible_scroll_indicator_info() {
+            if self.is_position_on_scroll_indicator_with_info(position, &info) {
+                needs_redraw = true;
+            }
+        }
 
         let cursor_changed = self.set_mouse_icon(position);
 
@@ -34,7 +51,7 @@ impl MyApp {
             return true;
         }
 
-        // Mouse motion reporting (neovim drag selection için)
+        // mouse reporting (unchanged)
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
             let mode = tab.terminal.performer.mouse_mode;
             let should_report = match mode {
@@ -50,10 +67,10 @@ impl MyApp {
                     / self.renderer.line_height as f64) as usize;
 
                 let btn_code = match self.mouse_button_held {
-                    Some(MouseButton::Left) => 32u8, // motion modifier = +32
+                    Some(MouseButton::Left) => 32,
                     Some(MouseButton::Middle) => 33,
                     Some(MouseButton::Right) => 34,
-                    _ => 35, // no button held (AnyEvent)
+                    _ => 35,
                 };
 
                 tab.terminal
@@ -70,32 +87,33 @@ impl MyApp {
             }
         }
 
-        if previous_hovered == new_hovered && !cursor_changed {
+        if previous_hovered_tab == new_hovered_tab && !cursor_changed && !needs_redraw {
             return false;
         }
 
-        if previous_hovered != new_hovered {
-            self.sync_renderer_from_terminal(true);
-        }
+        self.sync_renderer_from_terminal(true);
 
         true
     }
 
-    pub fn is_position_on_scroll_indicator(&self, position: PhysicalPosition<f64>) -> bool {
-        let Some(info) = self.visible_scroll_indicator_info() else {
-            return false;
-        };
-
+    pub fn is_position_on_scroll_indicator_with_info(
+        &self,
+        position: PhysicalPosition<f64>,
+        info: &ScrollIndicatorRenderInfo,
+    ) -> bool {
         let indicator_x =
             self.renderer.width as f64 - INDICATOR_WIDTH as f64 - TERMINAL_PADDING_X as f64;
-        let indicator_y = info.position_y as f64;
-        let indicator_w = INDICATOR_WIDTH as f64;
-        let indicator_h = info.height as f64;
 
         position.x >= indicator_x
-            && position.x <= indicator_x + indicator_w
-            && position.y >= indicator_y
-            && position.y <= indicator_y + indicator_h
+            && position.x <= indicator_x + INDICATOR_WIDTH as f64
+            && position.y >= info.position_y as f64
+            && position.y <= (info.position_y + info.height) as f64
+    }
+
+    pub fn is_position_on_scroll_indicator(&self, position: PhysicalPosition<f64>) -> bool {
+        self.visible_scroll_indicator_info()
+            .map(|info| self.is_position_on_scroll_indicator_with_info(position, &info))
+            .unwrap_or(false)
     }
 
     pub fn handle_mouse_click(&mut self, state: ElementState, button: MouseButton) {
@@ -187,7 +205,7 @@ impl MyApp {
             .min(max_offset);
         if new_offset != self.scroll_offset {
             self.scroll_offset = new_offset;
-            self.mark_scroll_indicator_interaction();
+            self.mark_scroll_indicator_interaction_throttled();
         }
 
         self.sync_renderer_from_terminal(false);

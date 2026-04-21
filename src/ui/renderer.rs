@@ -80,6 +80,7 @@ pub struct ScrollIndicatorRenderInfo {
     pub visible: bool,
     pub opacity: f32,
     pub position_y: f32,
+    pub is_mouse_on_indicator: bool,
     pub height: f32,
     pub in_alt_screen: bool,
 }
