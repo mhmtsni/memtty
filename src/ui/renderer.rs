@@ -336,7 +336,22 @@ impl Renderer {
             Some(self.height as f32),
         );
         buffer.set_monospace_width(&mut self.font_system, Some(self.cell_width));
+        let mut tab_buffer = vec![Buffer::new(
+            &mut self.font_system,
+            Metrics::new(self.font_size, self.line_height),
+        )];
+        for tab in &mut tab_buffer {
+            tab.set_size(
+                &mut self.font_system,
+                Some(self.width as f32),
+                Some(self.height as f32),
+            );
+        }
+        for tab in &mut tab_buffer {
+            tab.set_monospace_width(&mut self.font_system, Some(self.cell_width));
+        }
         self.buffer = buffer;
+        self.tab_buffer = tab_buffer;
         self.needs_shape = true;
         // Font size change means all cached geometry is wrong (pixel coords changed)
         self.full_rebuild = true;
