@@ -1,15 +1,14 @@
 use super::{effective_colors, Cell};
 
+const TERMINAL_PANEL_BG: super::Color = super::Color::rgb(20, 25, 31);
+
 pub(super) fn rebuild_background_geometry(
     renderer: &mut super::Renderer,
     rows: &[&Vec<Cell>],
 ) {
     renderer.solid_vertices.clear();
 
-    let base_bg = rows
-        .iter()
-        .find_map(|row| row.first().map(|cell| effective_colors(cell).1))
-        .unwrap_or(super::Color::rgb(20, 25, 31));
+    let base_bg = TERMINAL_PANEL_BG;
 
     // Fill the full panel under tabs so all padding/margins match terminal background.
     renderer.push_rect_pixels(

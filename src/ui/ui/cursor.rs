@@ -66,9 +66,12 @@ impl MyApp {
             id: tab_id,
             terminal: Terminal::new(),
             tx: Some(tx),
+            pending_pty: Vec::new(),
+            pending_pty_offset: 0,
         });
 
         self.active_tab = self.tabs.len() - 1;
+        self.clear_selection();
         self.handle_resize(self.window.inner_size());
         self.sync_renderer_from_terminal(true);
     }

@@ -64,6 +64,12 @@ impl MyApp {
                         }
                         return;
                     }
+                    "a" => {
+                        if self.select_all() {
+                            self.sync_renderer_from_terminal(true);
+                        }
+                        return;
+                    }
                     _ => {
                         if c.len() == 1 {
                             if let Some(ch) = c.chars().next() {
@@ -72,6 +78,7 @@ impl MyApp {
 
                                     if index < self.tabs.len() {
                                         self.active_tab = index;
+                                        self.clear_selection();
                                         self.reset_scrollback_view();
                                         self.sync_renderer_from_terminal(true);
                                     }
@@ -87,6 +94,7 @@ impl MyApp {
         }
 
         if let Some(bytes) = self.map_key_to_bytes(&event) {
+            self.clear_selection();
             self.send_to_pty(PtyInput::Data(bytes));
             self.reset_scrollback_view();
             return;
@@ -94,6 +102,7 @@ impl MyApp {
 
         if let Some(text) = event.text.as_ref() {
             if !text.is_empty() {
+                self.clear_selection();
                 self.send_to_pty(PtyInput::Data(text.as_bytes().to_vec()));
                 self.reset_scrollback_view();
             }

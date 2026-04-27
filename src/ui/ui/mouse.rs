@@ -51,6 +51,15 @@ impl MyApp {
             return true;
         }
 
+        if self.selecting {
+            let scrolled = self.auto_scroll_during_selection(position);
+            let selection_changed = self.handle_text_selection(position);
+            if scrolled || selection_changed {
+                self.sync_renderer_from_terminal(true);
+                return true;
+            }
+        }
+
         // mouse reporting (unchanged)
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
             let mode = tab.terminal.performer.mouse_mode;
@@ -127,8 +136,44 @@ impl MyApp {
                         self.drag_start_y = self.mouse_position.y;
                         self.drag_start_scroll_offset = self.scroll_offset;
                         self.mark_scroll_indicator_interaction();
-                    } else {
+                    } else if self.tab_index_at_position(self.mouse_position).is_some() {
                         self.handle_tab_click(self.mouse_position);
+                    } else {
+                        let cell = self.cell_position_from_mouse(self.mouse_position);
+                        let now = Instant::now();
+                        let within_multi_click_window =
+                            match (self.last_left_click_at, self.last_left_click_cell, cell) {
+                                (Some(last_at), Some((_, last_row)), Some((_, row))) => {
+                                    row == last_row
+                                        && now.duration_since(last_at) <= Duration::from_millis(350)
+                                }
+                                _ => false,
+                            };
+
+                        self.left_click_streak = if within_multi_click_window {
+                            self.left_click_streak.saturating_add(1).min(3)
+                        } else {
+                            1
+                        };
+
+                        if self.left_click_streak == 2 {
+                            if let Some((col, row)) = cell {
+                                self.select_word(row, col);
+                            }
+                            self.selecting = false;
+                        } else if self.left_click_streak >= 3 {
+                            if let Some((_, row)) = cell {
+                                self.select_row(row);
+                            }
+                            self.selecting = false;
+                        } else {
+                            self.selection_start = cell;
+                            self.selection_end = None;
+                            self.selecting = cell.is_some();
+                        }
+
+                        self.last_left_click_at = Some(now);
+                        self.last_left_click_cell = cell;
                     }
                 }
             }
@@ -136,6 +181,17 @@ impl MyApp {
                 self.mouse_button_held = None;
                 self.mouse_hold_start = None;
                 self.dragging_scroll_indicator = false;
+
+                if button == MouseButton::Left
+                    && self.selecting
+                    && self.selection_start.is_some()
+                    && self.selection_end.is_none()
+                {
+                    // Treat plain click as caret action only; no persistent text selection.
+                    self.clear_selection();
+                }
+
+                self.selecting = false;
             }
         }
 
@@ -172,7 +228,235 @@ impl MyApp {
         self.sync_renderer_from_terminal(true);
     }
 
-    // fn handle_text_selection(&mut self, position: PhysicalPosition<f64>) {}
+    fn handle_text_selection(&mut self, position: PhysicalPosition<f64>) -> bool {
+        let Some(cell) = self.selection_cell_position_from_mouse(position) else {
+            return false;
+        };
+
+        if self.selection_end.is_none() && self.selection_start == Some(cell) {
+            return false;
+        }
+
+        if self.selection_end == Some(cell) {
+            return false;
+        }
+
+        self.selection_end = Some(cell);
+        true
+    }
+
+    fn auto_scroll_during_selection(&mut self, position: PhysicalPosition<f64>) -> bool {
+        let Some(active_tab) = self.normalize_active_tab() else {
+            return false;
+        };
+
+        let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
+        if max_offset == 0 {
+            return false;
+        }
+
+        let content_top = TAB_HEIGHT as f64 + TERMINAL_PADDING_Y as f64;
+        let content_bottom = self.renderer.height as f64 - TERMINAL_PADDING_Y as f64;
+        if content_bottom <= content_top {
+            return false;
+        }
+
+        let edge_threshold = self.renderer.line_height.max(8.0) as f64;
+        let mut next_offset = self.scroll_offset;
+
+        if position.y < content_top + edge_threshold {
+            next_offset = (self.scroll_offset + 1).min(max_offset);
+        } else if position.y > content_bottom - edge_threshold {
+            next_offset = (self.scroll_offset - 1).max(0);
+        }
+
+        if next_offset == self.scroll_offset {
+            return false;
+        }
+
+        self.scroll_offset = next_offset;
+        self.mark_scroll_indicator_interaction_throttled();
+        true
+    }
+
+    fn cell_position_from_mouse(&self, position: PhysicalPosition<f64>) -> Option<(usize, usize)> {
+        if self.tabs.is_empty()
+            || position.y < TAB_HEIGHT as f64 + TERMINAL_PADDING_Y as f64
+            || position.x < TERMINAL_PADDING_X as f64
+            || self.renderer.cell_width <= 0.0
+            || self.renderer.line_height <= 0.0
+        {
+            return None;
+        }
+
+        let visible_rows = self.renderer.visible_row_capacity();
+        if visible_rows == 0 {
+            return None;
+        }
+
+        let rows = self.tabs[self.active_tab]
+            .terminal
+            .visible_rows(self.scroll_offset, visible_rows);
+        if rows.is_empty() {
+            return None;
+        }
+
+        let performer = &self.tabs[self.active_tab].terminal.performer;
+        let total_rows = performer.scrollback.len() + performer.grid.len();
+        if total_rows == 0 {
+            return None;
+        }
+
+        let offset = self.scroll_offset.max(0) as usize;
+        let end = total_rows.saturating_sub(offset);
+        let start = end.saturating_sub(rows.len());
+
+        let col = ((position.x - TERMINAL_PADDING_X as f64) / self.renderer.cell_width as f64)
+            .floor()
+            .max(0.0) as usize;
+        let row = ((position.y - TAB_HEIGHT as f64 - TERMINAL_PADDING_Y as f64)
+            / self.renderer.line_height as f64)
+            .floor()
+            .max(0.0) as usize;
+
+        let row = row.min(rows.len() - 1);
+        let max_cols = rows[row].len().max(1);
+        let col = col.min(max_cols - 1);
+
+        Some((col, (start + row).min(total_rows - 1)))
+    }
+
+    fn selection_cell_position_from_mouse(
+        &self,
+        position: PhysicalPosition<f64>,
+    ) -> Option<(usize, usize)> {
+        if self.tabs.is_empty()
+            || self.renderer.cell_width <= 0.0
+            || self.renderer.line_height <= 0.0
+        {
+            return None;
+        }
+
+        let visible_rows = self.renderer.visible_row_capacity();
+        if visible_rows == 0 {
+            return None;
+        }
+
+        let rows = self.tabs[self.active_tab]
+            .terminal
+            .visible_rows(self.scroll_offset, visible_rows);
+        if rows.is_empty() {
+            return None;
+        }
+
+        let performer = &self.tabs[self.active_tab].terminal.performer;
+        let total_rows = performer.scrollback.len() + performer.grid.len();
+        if total_rows == 0 {
+            return None;
+        }
+
+        let offset = self.scroll_offset.max(0) as usize;
+        let end = total_rows.saturating_sub(offset);
+        let start = end.saturating_sub(rows.len());
+
+        let content_left = TERMINAL_PADDING_X as f64;
+        let content_top = TAB_HEIGHT as f64 + TERMINAL_PADDING_Y as f64;
+        let content_bottom = content_top + rows.len() as f64 * self.renderer.line_height as f64;
+
+        let clamped_x = position.x.max(content_left);
+        let clamped_y = position
+            .y
+            .clamp(content_top, (content_bottom - 1.0).max(content_top));
+
+        let col = ((clamped_x - TERMINAL_PADDING_X as f64) / self.renderer.cell_width as f64)
+            .floor()
+            .max(0.0) as usize;
+        let row = ((clamped_y - TAB_HEIGHT as f64 - TERMINAL_PADDING_Y as f64)
+            / self.renderer.line_height as f64)
+            .floor()
+            .max(0.0) as usize;
+
+        let row = row.min(rows.len() - 1);
+        let max_cols = rows[row].len().max(1);
+        let col = col.min(max_cols - 1);
+
+        Some((col, (start + row).min(total_rows - 1)))
+    }
+
+    fn select_row(&mut self, abs_row: usize) {
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            self.selection_start = None;
+            self.selection_end = None;
+            return;
+        };
+
+        let performer = &tab.terminal.performer;
+        let total_rows = performer.scrollback.len() + performer.grid.len();
+        if total_rows == 0 || abs_row >= total_rows {
+            self.selection_start = None;
+            self.selection_end = None;
+            return;
+        }
+
+        let scrollback_len = performer.scrollback.len();
+        let row_len = if abs_row < scrollback_len {
+            performer.scrollback[abs_row].len()
+        } else {
+            performer.grid[abs_row - scrollback_len].len()
+        };
+
+        if row_len == 0 {
+            self.selection_start = None;
+            self.selection_end = None;
+            return;
+        }
+
+        self.selection_start = Some((0, abs_row));
+        self.selection_end = Some((row_len - 1, abs_row));
+    }
+
+    fn select_word(&mut self, abs_row: usize, abs_col: usize) {
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            self.clear_selection();
+            return;
+        };
+
+        let performer = &tab.terminal.performer;
+        let total_rows = performer.scrollback.len() + performer.grid.len();
+        if total_rows == 0 || abs_row >= total_rows {
+            self.clear_selection();
+            return;
+        }
+
+        let scrollback_len = performer.scrollback.len();
+        let row = if abs_row < scrollback_len {
+            &performer.scrollback[abs_row]
+        } else {
+            &performer.grid[abs_row - scrollback_len]
+        };
+
+        if row.is_empty() {
+            self.clear_selection();
+            return;
+        }
+
+        let col = abs_col.min(row.len() - 1);
+        let clicked = row[col].c;
+        let class = char_class(clicked);
+
+        let mut start = col;
+        while start > 0 && char_class(row[start - 1].c) == class {
+            start -= 1;
+        }
+
+        let mut end = col;
+        while end + 1 < row.len() && char_class(row[end + 1].c) == class {
+            end += 1;
+        }
+
+        self.selection_start = Some((start, abs_row));
+        self.selection_end = Some((end, abs_row));
+    }
 
     fn handle_scroll_indicator_drag(&mut self, position: PhysicalPosition<f64>) {
         let Some(active_tab) = self.normalize_active_tab() else {
@@ -218,15 +502,18 @@ impl MyApp {
 
         for (index, tab) in tabs.iter_mut().enumerate() {
             if self.is_mouse_on_tab(position, tab) {
-                self.active_tab = index;
-                self.reset_scrollback_view();
-                self.sync_renderer_from_terminal(true);
+                if self.active_tab != index {
+                    self.active_tab = index;
+                    self.clear_selection();
+                    self.reset_scrollback_view();
+                    self.sync_renderer_from_terminal(true);
+                }
                 return;
             }
         }
     }
 
-    pub fn is_mouse_on_tab(
+    pub(super) fn is_mouse_on_tab(
         &self,
         position: PhysicalPosition<f64>,
         tab: &mut TabRenderInfo,
@@ -253,5 +540,22 @@ impl MyApp {
         }
 
         Some(index as usize)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharClass {
+    Word,
+    Whitespace,
+    Symbol,
+}
+
+fn char_class(c: char) -> CharClass {
+    if c.is_ascii_alphanumeric() || c == '_' {
+        CharClass::Word
+    } else if c.is_whitespace() {
+        CharClass::Whitespace
+    } else {
+        CharClass::Symbol
     }
 }

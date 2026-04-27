@@ -1,6 +1,12 @@
 use super::*;
 
 impl MyApp {
+    pub(super) fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
+        self.selecting = false;
+    }
+
     pub(super) fn normalize_active_tab(&mut self) -> Option<usize> {
         if self.tabs.is_empty() {
             return None;
@@ -51,6 +57,7 @@ impl MyApp {
             self.active_tab = self.tabs.len() - 1;
         }
 
+        self.clear_selection();
         self.reset_scrollback_view();
         self.sync_renderer_from_terminal(true);
         true
@@ -90,15 +97,62 @@ impl MyApp {
         }
     }
 
-    pub(crate) fn process_pty_data(&mut self, tab_id: usize, data: &[u8]) {
+    pub(crate) fn queue_pty_data(&mut self, tab_id: usize, data: &[u8]) {
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            let replies = tab.terminal.process(data);
-            if let Some(tx) = &tab.tx {
-                for reply in replies {
-                    let _ = tx.send(PtyInput::Data(reply));
+            tab.pending_pty.extend_from_slice(data);
+        }
+    }
+
+    pub(crate) fn has_pending_pty_data(&self) -> bool {
+        self.tabs
+            .iter()
+            .any(|tab| tab.pending_pty_offset < tab.pending_pty.len())
+    }
+
+    pub(crate) fn process_pending_pty_data(&mut self, byte_budget: usize) -> bool {
+        const PARSE_CHUNK_BYTES: usize = 16 * 1024;
+        const COMPACT_THRESHOLD: usize = 64 * 1024;
+
+        let mut remaining = byte_budget;
+        let mut any_processed = false;
+
+        for tab in &mut self.tabs {
+            while remaining > 0 {
+                let available = tab.pending_pty.len().saturating_sub(tab.pending_pty_offset);
+                if available == 0 {
+                    break;
+                }
+
+                let take = available.min(remaining).min(PARSE_CHUNK_BYTES);
+                let start = tab.pending_pty_offset;
+                let end = start + take;
+
+                let replies = tab.terminal.process(&tab.pending_pty[start..end]);
+                tab.pending_pty_offset = end;
+                remaining -= take;
+                any_processed = true;
+
+                if tab.pending_pty_offset == tab.pending_pty.len() {
+                    tab.pending_pty.clear();
+                    tab.pending_pty_offset = 0;
+                } else if tab.pending_pty_offset >= COMPACT_THRESHOLD {
+                    tab.pending_pty.drain(..tab.pending_pty_offset);
+                    tab.pending_pty_offset = 0;
+                }
+
+                if let Some(tx) = &tab.tx {
+                    for reply in replies {
+                        let _ = tx.send(PtyInput::Data(reply));
+                    }
                 }
             }
+
+            if remaining == 0 {
+                break;
+            }
         }
+
+        any_processed
     }
 
     pub fn set_modifiers(&mut self, modifiers: ModifiersState) {

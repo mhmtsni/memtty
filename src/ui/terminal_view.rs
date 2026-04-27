@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{pty::PtyInput, ui::ui::Message};
 use winit::{
@@ -152,7 +152,7 @@ impl ApplicationHandler<Message> for TerminalView {
         match event {
             Message::PtyDataReceived(tab_id, data) => {
                 if let Some(app) = self.app.as_mut() {
-                    app.process_pty_data(tab_id, &data);
+                    app.queue_pty_data(tab_id, &data);
                 }
                 self.terminal_dirty = true;
                 self.request_redraw_if_needed();
@@ -195,11 +195,21 @@ impl ApplicationHandler<Message> for TerminalView {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::RedrawRequested => {
+                const PTY_PARSE_BUDGET_BYTES: usize = 256 * 1024;
+
                 self.redraw_requested = false;
+                let mut schedule_follow_up_redraw = false;
 
                 if self.terminal_dirty {
-                    state.sync_renderer_from_terminal(false);
-                    self.terminal_dirty = false;
+                    let parsed = state.process_pending_pty_data(PTY_PARSE_BUDGET_BYTES);
+                    if parsed {
+                        state.sync_renderer_from_terminal(false);
+                    }
+
+                    self.terminal_dirty = state.has_pending_pty_data();
+                    if self.terminal_dirty {
+                        schedule_follow_up_redraw = true;
+                    }
                 }
 
                 let surface = self.surface.as_ref().unwrap();
@@ -234,6 +244,10 @@ impl ApplicationHandler<Message> for TerminalView {
 
                 queue.submit(Some(encoder.finish()));
                 frame.present();
+
+                if schedule_follow_up_redraw {
+                    self.request_redraw_if_needed();
+                }
             }
 
             WindowEvent::Resized(size) => {
@@ -324,7 +338,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn spawn_pty_for_tab(tab_id: usize, proxy: EventLoopProxy<Message>) -> Sender<PtyInput> {
     const PTY_COALESCE_WINDOW: Duration = Duration::from_millis(1);
-    const PTY_MAX_BATCH_BYTES: usize = 512;
+    const PTY_MAX_BATCH_BYTES: usize = 64 * 1024;
     const PTY_OUTPUT_QUEUE_CAPACITY: usize = 512;
 
     let (tx_to_pty, rx_from_ui) = std::sync::mpsc::channel();
@@ -339,14 +353,22 @@ pub fn spawn_pty_for_tab(tab_id: usize, proxy: EventLoopProxy<Message>) -> Sende
 
     std::thread::spawn(move || {
         while let Ok(mut data) = rx_from_pty.recv() {
-            // Coalesce a short burst of PTY chunks so clear+payload updates are
-            // rendered together instead of as visible intermediate frames.
+            // Coalesce a short burst of PTY chunks so high-throughput output
+            // does not flood the event loop with tiny UI update messages.
+            let deadline = Instant::now() + PTY_COALESCE_WINDOW;
             loop {
                 if data.len() >= PTY_MAX_BATCH_BYTES {
                     break;
                 }
 
-                match rx_from_pty.recv_timeout(PTY_COALESCE_WINDOW) {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+
+                let remaining = deadline.saturating_duration_since(now);
+
+                match rx_from_pty.recv_timeout(remaining) {
                     Ok(next) => data.extend_from_slice(&next),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,

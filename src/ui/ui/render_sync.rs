@@ -2,6 +2,7 @@ use super::*;
 
 impl MyApp {
     pub fn sync_renderer_from_terminal(&mut self, content_changed: bool) {
+        self.apply_selection_to_cells();
         let tabs = self.visible_tab_info(self.tabs.len());
         let Some(active_tab) = self.normalize_active_tab() else {
             self.renderer
@@ -20,6 +21,72 @@ impl MyApp {
 
         self.renderer
             .set_cells(&rows, cursor, tabs, scroll_indicator, content_changed);
+    }
+
+    fn apply_selection_to_cells(&mut self) {
+        let Some(active_tab) = self.normalize_active_tab() else {
+            return;
+        };
+
+        let performer = &mut self.tabs[active_tab].terminal.performer;
+        for row in performer.scrollback.iter_mut() {
+            for cell in row.iter_mut() {
+                cell.is_selected = false;
+            }
+        }
+        for row in performer.grid.iter_mut() {
+            for cell in row.iter_mut() {
+                cell.is_selected = false;
+            }
+        }
+
+        let (Some((sx, sy)), Some((ex, ey))) = (self.selection_start, self.selection_end) else {
+            return;
+        };
+
+        let total_rows = performer.scrollback.len() + performer.grid.len();
+        if total_rows == 0 {
+            return;
+        }
+
+        let mut a_row = sy.min(total_rows - 1);
+        let mut a_col = sx;
+        let mut b_row = ey.min(total_rows - 1);
+        let mut b_col = ex;
+
+        if (a_row, a_col) > (b_row, b_col) {
+            std::mem::swap(&mut a_row, &mut b_row);
+            std::mem::swap(&mut a_col, &mut b_col);
+        }
+
+        let scrollback_len = performer.scrollback.len();
+
+        for abs_row in a_row..=b_row {
+            let row = if abs_row < scrollback_len {
+                &mut performer.scrollback[abs_row]
+            } else {
+                &mut performer.grid[abs_row - scrollback_len]
+            };
+
+            if row.is_empty() {
+                continue;
+            }
+
+            let row_start = if abs_row == a_row { a_col } else { 0 };
+            let row_end = if abs_row == b_row {
+                b_col.min(row.len() - 1)
+            } else {
+                row.len() - 1
+            };
+
+            if row_start > row_end {
+                continue;
+            }
+
+            for col in row_start..=row_end {
+                row[col].is_selected = true;
+            }
+        }
     }
 
     pub(super) fn visible_tab_info(&self, tab_count: usize) -> Option<Vec<TabRenderInfo>> {

@@ -133,7 +133,7 @@ pub fn run(
     })?;
 
     // Spawn the shell (default to zsh; honor $SHELL when present)
-    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "fish".to_string());
+    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
     let mut cmd = CommandBuilder::new(shell_path.clone());
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");

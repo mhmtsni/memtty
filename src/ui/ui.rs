@@ -48,6 +48,8 @@ pub struct Tab {
     pub id: usize,
     pub terminal: Terminal,
     tx: Option<Sender<PtyInput>>,
+    pending_pty: Vec<u8>,
+    pending_pty_offset: usize,
 }
 
 pub struct MyApp {
@@ -71,6 +73,12 @@ pub struct MyApp {
     drag_start_scroll_offset: i32,
     scroll_indicator_last_interaction: Option<Instant>,
     scroll_indicator_last_alpha: f32,
+    selection_start: Option<(usize, usize)>,
+    selection_end: Option<(usize, usize)>,
+    selecting: bool,
+    last_left_click_at: Option<Instant>,
+    last_left_click_cell: Option<(usize, usize)>,
+    left_click_streak: u8,
 }
 
 impl MyApp {
@@ -82,6 +90,8 @@ impl MyApp {
                 id: 0,
                 terminal: Terminal::new(),
                 tx: Some(tx_to_pty),
+                pending_pty: Vec::new(),
+                pending_pty_offset: 0,
             }],
             active_tab: 0,
             mouse_position: PhysicalPosition::new(0.0, 0.0),
@@ -99,6 +109,12 @@ impl MyApp {
             drag_start_scroll_offset: 0,
             scroll_indicator_last_interaction: None,
             scroll_indicator_last_alpha: 0.0,
+            selection_start: None,
+            selection_end: None,
+            selecting: false,
+            last_left_click_at: None,
+            last_left_click_cell: None,
+            left_click_streak: 0,
         };
 
         app.sync_renderer_from_terminal(true);
