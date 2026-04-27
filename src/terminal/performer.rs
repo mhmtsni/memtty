@@ -456,7 +456,9 @@ impl Performer {
             1004 => {
                 self.focus_enable = enable;
             }
-            1006 => self.sgr_mouse = !self.sgr_mouse,
+            1006 => {
+                self.sgr_mouse = enable;
+            }
 
             1049 => {
                 if enable {

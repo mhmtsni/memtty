@@ -319,7 +319,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
 
-    let mut app = TerminalView {
+    let mut terminal_view = TerminalView {
         app: None,
         window: None,
         proxy: Some(proxy),
@@ -331,7 +331,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         redraw_requested: false,
     };
 
-    event_loop.run_app(&mut app)?;
+    event_loop.run_app(&mut terminal_view)?;
 
     Ok(())
 }

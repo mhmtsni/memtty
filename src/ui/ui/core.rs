@@ -4,7 +4,7 @@ impl MyApp {
     pub(super) fn clear_selection(&mut self) {
         self.selection_start = None;
         self.selection_end = None;
-        self.selecting = false;
+        self.selection_anchor = None;
     }
 
     pub(super) fn normalize_active_tab(&mut self) -> Option<usize> {

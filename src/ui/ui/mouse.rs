@@ -1,5 +1,14 @@
 use super::*;
 
+const CHAR_SELECTION_DRAG_THRESHOLD_PX: f64 = 4.0;
+
+#[derive(PartialEq)]
+pub(super) enum SelectionMode {
+    Char,
+    Word,
+    Line,
+}
+
 impl MyApp {
     pub fn set_mouse_icon(&mut self, position: PhysicalPosition<f64>) -> bool {
         let previous_icon = self.mouse_icon;
@@ -49,6 +58,23 @@ impl MyApp {
         if self.dragging_scroll_indicator {
             self.handle_scroll_indicator_drag(position);
             return true;
+        }
+
+        if self.mouse_button_held == Some(MouseButton::Left)
+            && !self.selecting
+            && self.selection_mode == SelectionMode::Char
+            && self.selection_anchor.is_some()
+        {
+            if let Some(press_position) = self.left_press_position {
+                let dx = position.x - press_position.x;
+                let dy = position.y - press_position.y;
+                if dx * dx + dy * dy
+                    >= CHAR_SELECTION_DRAG_THRESHOLD_PX * CHAR_SELECTION_DRAG_THRESHOLD_PX
+                {
+                    self.selecting = true;
+                    self.selection_start = self.selection_anchor;
+                }
+            }
         }
 
         if self.selecting {
@@ -131,6 +157,7 @@ impl MyApp {
                 self.mouse_button_held = Some(button);
                 self.mouse_hold_start = Some(Instant::now());
                 if button == MouseButton::Left {
+                    self.left_press_position = Some(self.mouse_position);
                     if self.is_position_on_scroll_indicator(self.mouse_position) {
                         self.dragging_scroll_indicator = true;
                         self.drag_start_y = self.mouse_position.y;
@@ -159,19 +186,32 @@ impl MyApp {
                         if self.left_click_streak == 2 {
                             if let Some((col, row)) = cell {
                                 self.select_word(row, col);
+                                self.selection_anchor = self.selection_start;
                             }
-                            self.selecting = false;
+                            self.selection_mode = SelectionMode::Word;
+                            self.selecting = true;
                         } else if self.left_click_streak >= 3 {
                             if let Some((_, row)) = cell {
                                 self.select_row(row);
+                                self.selection_anchor = self.selection_start;
                             }
-                            self.selecting = false;
+                            self.selection_mode = SelectionMode::Line;
+                            self.selecting = true;
                         } else {
-                            self.selection_start = cell;
+                            self.selection_anchor = cell;
+                            self.selection_start = None;
                             self.selection_end = None;
-                            self.selecting = cell.is_some();
+                            self.selection_mode = SelectionMode::Char;
                         }
 
+                        let in_alt = self.tabs[self.active_tab].terminal.performer.in_alt_screen;
+
+                        if in_alt {
+                            self.selection_start = None;
+                            self.selection_end = None;
+                            self.selecting = false;
+                            self.selection_anchor = None;
+                        }
                         self.last_left_click_at = Some(now);
                         self.last_left_click_cell = cell;
                     }
@@ -180,15 +220,13 @@ impl MyApp {
             ElementState::Released => {
                 self.mouse_button_held = None;
                 self.mouse_hold_start = None;
+                self.left_press_position = None;
                 self.dragging_scroll_indicator = false;
 
-                if button == MouseButton::Left
-                    && self.selecting
-                    && self.selection_start.is_some()
-                    && self.selection_end.is_none()
-                {
-                    // Treat plain click as caret action only; no persistent text selection.
-                    self.clear_selection();
+                if self.selection_mode == SelectionMode::Char && !self.selecting {
+                    self.selection_start = None;
+                    self.selection_end = None;
+                    self.selection_anchor = None;
                 }
 
                 self.selecting = false;
@@ -206,7 +244,6 @@ impl MyApp {
                 };
                 let pressed = state == ElementState::Pressed;
 
-                // Pixel pozisyonunu hücre koordinatına çevir
                 let cell_x = ((self.mouse_position.x - TERMINAL_PADDING_X as f64)
                     / self.renderer.cell_width as f64) as usize;
                 let cell_y =
@@ -233,15 +270,70 @@ impl MyApp {
             return false;
         };
 
-        if self.selection_end.is_none() && self.selection_start == Some(cell) {
-            return false;
+        match self.selection_mode {
+            SelectionMode::Char => {
+                if self.selection_end == Some(cell) {
+                    return false;
+                }
+                self.selection_end = Some(cell);
+            }
+
+            SelectionMode::Word => {
+                let (col, row) = cell;
+                let anchor = self.selection_anchor;
+
+                self.select_word(row, col);
+
+                if let Some(anchor_pos) = anchor {
+                    let anchor_row = anchor_pos.1;
+                    let anchor_col = anchor_pos.0;
+
+                    let dragging_forward = if row != anchor_row {
+                        row > anchor_row
+                    } else {
+                        col >= anchor_col
+                    };
+
+                    if dragging_forward {
+                        self.selection_start = Some(anchor_pos);
+                    } else {
+                        let word_start = self.selection_start; // yeni kelimenin başı
+
+                        self.select_word(anchor_row, anchor_col);
+                        let anchor_end = self.selection_end; // anchor kelimenin sonu
+
+                        self.selection_start = word_start;
+                        self.selection_end = anchor_end;
+                    }
+                }
+            }
+
+            SelectionMode::Line => {
+                let (_, row) = cell;
+                let anchor = self.selection_anchor;
+
+                if let Some(anchor_pos) = anchor {
+                    let anchor_row = anchor_pos.1;
+
+                    if row >= anchor_row {
+                        self.select_row(row);
+                        let new_end = self.selection_end;
+                        self.selection_start = Some((0, anchor_row));
+                        self.selection_end = new_end;
+                    } else {
+                        self.select_row(anchor_row);
+                        let anchor_end = self.selection_end;
+
+                        self.select_row(row);
+                        let new_start = self.selection_start; // (0, row)
+
+                        self.selection_start = new_start;
+                        self.selection_end = anchor_end;
+                    }
+                }
+            }
         }
 
-        if self.selection_end == Some(cell) {
-            return false;
-        }
-
-        self.selection_end = Some(cell);
         true
     }
 

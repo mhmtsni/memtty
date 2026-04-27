@@ -11,6 +11,7 @@ use winit::{
 };
 
 use crate::terminal::performer::MouseMode;
+use crate::ui::ui::mouse::SelectionMode;
 use crate::{
     pty::PtyInput,
     terminal::{CursorStyle, Terminal},
@@ -62,6 +63,7 @@ pub struct MyApp {
 
     mouse_button_held: Option<MouseButton>,
     mouse_hold_start: Option<Instant>,
+    left_press_position: Option<PhysicalPosition<f64>>,
     full_screen: bool,
     modifiers: ModifiersState,
     pub renderer: Renderer,
@@ -79,6 +81,8 @@ pub struct MyApp {
     last_left_click_at: Option<Instant>,
     last_left_click_cell: Option<(usize, usize)>,
     left_click_streak: u8,
+    selection_mode: SelectionMode,
+    selection_anchor: Option<(usize, usize)>,
 }
 
 impl MyApp {
@@ -104,6 +108,7 @@ impl MyApp {
             has_focus: true,
             mouse_button_held: None,
             mouse_hold_start: None,
+            left_press_position: None,
             dragging_scroll_indicator: false,
             drag_start_y: 0.0,
             drag_start_scroll_offset: 0,
@@ -115,6 +120,8 @@ impl MyApp {
             last_left_click_at: None,
             last_left_click_cell: None,
             left_click_streak: 0,
+            selection_mode: SelectionMode::Char,
+            selection_anchor: None,
         };
 
         app.sync_renderer_from_terminal(true);
