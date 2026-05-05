@@ -14,8 +14,13 @@ impl MyApp {
             return;
         }
 
+        if self.is_history_completion_key(&event) && self.cycle_history_completion() {
+            return;
+        }
+
         if let Some(bytes) = self.map_key_to_bytes(&event) {
             self.clear_selection();
+            self.record_key_input(&event, &bytes);
             self.send_to_pty(PtyInput::Data(bytes));
             self.reset_scrollback_view();
             return;
@@ -24,6 +29,7 @@ impl MyApp {
         if let Some(text) = event.text.as_ref() {
             if !text.is_empty() {
                 self.clear_selection();
+                self.record_text_input(text);
                 self.send_to_pty(PtyInput::Data(text.as_bytes().to_vec()));
                 self.reset_scrollback_view();
             }
@@ -175,5 +181,9 @@ impl MyApp {
             Key::Named(NamedKey::F12) => Some(b"\x1b[24~".to_vec()),
             _ => None,
         }
+    }
+
+    fn is_history_completion_key(&self, event: &KeyEvent) -> bool {
+        matches!(event.logical_key, Key::Named(NamedKey::Tab)) && self.modifiers.shift_key()
     }
 }

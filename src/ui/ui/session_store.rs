@@ -100,6 +100,11 @@ impl MyApp {
                 let end = start + take;
 
                 let replies = tab.terminal.process(&tab.pending_pty[start..end]);
+                let history_commands = tab.terminal.performer.drain_history_commands();
+                super::history_completion::append_history_commands(
+                    &mut tab.shell_history,
+                    history_commands,
+                );
                 tab.pending_pty_offset = end;
                 remaining -= take;
                 any_processed = true;

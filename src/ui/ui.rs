@@ -29,6 +29,7 @@ mod clipboard;
 mod command_router;
 mod core;
 mod cursor;
+mod history_completion;
 mod input;
 mod interaction_state;
 mod mouse;
@@ -56,6 +57,10 @@ pub struct Tab {
     tx: Option<Sender<PtyInput>>,
     pending_pty: Vec<u8>,
     pending_pty_offset: usize,
+    input_line: String,
+    history_completion: Option<HistoryCompletionState>,
+    history_preview: Option<String>,
+    shell_history: Vec<String>,
 }
 
 impl Tab {
@@ -66,8 +71,18 @@ impl Tab {
             tx: Some(tx),
             pending_pty: Vec::new(),
             pending_pty_offset: 0,
+            input_line: String::new(),
+            history_completion: None,
+            history_preview: None,
+            shell_history: Vec::new(),
         }
     }
+}
+
+pub struct HistoryCompletionState {
+    prefix: String,
+    matches: Vec<String>,
+    index: usize,
 }
 
 pub struct SessionStore {

@@ -69,6 +69,10 @@ impl MyApp {
             tx: Some(tx),
             pending_pty: Vec::new(),
             pending_pty_offset: 0,
+            input_line: String::new(),
+            history_completion: None,
+            history_preview: None,
+            shell_history: Vec::new(),
         });
 
         self.session.active_tab = self.session.tabs.len() - 1;

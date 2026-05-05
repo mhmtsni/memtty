@@ -32,8 +32,25 @@ impl Performer {
                 }
             }
             133 => {}
+            777 => self.handle_terminal_private_osc(params),
             _ => {}
         }
+    }
+
+    fn handle_terminal_private_osc(&mut self, params: &[&[u8]]) {
+        if params.get(1).copied() != Some(b"history") || params.len() <= 2 {
+            return;
+        }
+
+        let mut command_bytes = Vec::new();
+        for (i, part) in params.iter().enumerate().skip(2) {
+            if i > 2 {
+                command_bytes.push(b';');
+            }
+            command_bytes.extend_from_slice(part);
+        }
+
+        self.queue_history_command(String::from_utf8_lossy(&command_bytes).to_string());
     }
 
     fn set_window_title(&mut self, params: &[&[u8]]) {

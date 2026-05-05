@@ -276,6 +276,16 @@ fn test_osc_title_rejoins_semicolons() {
 }
 
 #[test]
+fn test_private_history_osc_rejoins_semicolons() {
+    let mut t = term();
+    t.process(b"\x1b]777;history;echo one; echo two\x07");
+    assert_eq!(
+        t.performer.drain_history_commands(),
+        vec!["echo one; echo two".to_string()]
+    );
+}
+
+#[test]
 fn test_tmux_dcs_passthrough_dispatches_wrapped_osc() {
     let mut t = term();
     t.process(b"\x1bPtmux;\x1b\x1b]2;from tmux\x07\x1b\\");

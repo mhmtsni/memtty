@@ -114,6 +114,7 @@ pub struct Performer {
 
     // Bytes that should be written back to the PTY (DA/DSR replies, etc.).
     pty_replies: Vec<Vec<u8>>,
+    history_commands: Vec<String>,
 
     tmux_dcs_buffer: Option<Vec<u8>>,
 
@@ -179,6 +180,7 @@ impl Default for Performer {
             join_next_to_last_cell: false,
             current_hyperlink: None,
             pty_replies: Vec::new(),
+            history_commands: Vec::new(),
             tmux_dcs_buffer: None,
         }
     }
@@ -214,8 +216,18 @@ impl Performer {
         std::mem::take(&mut self.pty_replies)
     }
 
+    pub fn drain_history_commands(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.history_commands)
+    }
+
     fn queue_pty_reply(&mut self, bytes: Vec<u8>) {
         self.pty_replies.push(bytes);
+    }
+
+    fn queue_history_command(&mut self, command: String) {
+        if !command.trim().is_empty() {
+            self.history_commands.push(command);
+        }
     }
 
     fn decode_tmux_dcs_passthrough(bytes: &[u8]) -> Option<Vec<u8>> {

@@ -67,6 +67,16 @@ impl MyApp {
             }
         }
 
+        if self.session.scroll_offset == 0 {
+            if let Some(preview) = self.current_history_preview() {
+                let cursor_row = terminal.performer.cursor_y;
+                let cursor_x = terminal.performer.cursor_x;
+                if let Some(row) = rows.get_mut(cursor_row) {
+                    super::history_completion::draw_history_preview(row, cursor_x, preview);
+                }
+            }
+        }
+
         rows
     }
 }

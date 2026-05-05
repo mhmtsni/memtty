@@ -102,9 +102,16 @@ __terminal_set_title_cmd() {
     print -nP "\e]2;${cmd}\a"
 }
 
+__terminal_record_history_cmd() {
+    local cmd="$1"
+    [[ -n "$cmd" ]] || return
+    print -rn -- $'\e]777;history;'"$cmd"$'\a'
+}
+
 autoload -Uz add-zsh-hook 2>/dev/null || true
 add-zsh-hook precmd __terminal_set_title_pwd
 add-zsh-hook preexec __terminal_set_title_cmd
+add-zsh-hook preexec __terminal_record_history_cmd
 "#,
             )?;
 
@@ -133,10 +140,21 @@ __terminal_set_title_pwd() {
     printf '\033]2;%s\007' "$PWD"
 }
 
+__terminal_record_history_cmd() {
+    local entry cmd
+    entry="$(HISTTIMEFORMAT= history 1)"
+    if [[ "$entry" =~ ^[[:space:]]*[0-9]+[[:space:]]+(.*)$ ]]; then
+        cmd="${BASH_REMATCH[1]}"
+        if [[ -n "$cmd" ]]; then
+            printf '\033]777;history;%s\007' "$cmd"
+        fi
+    fi
+}
+
 if [ -n "${PROMPT_COMMAND:-}" ]; then
-    PROMPT_COMMAND="__terminal_set_title_pwd; ${PROMPT_COMMAND}"
+    PROMPT_COMMAND="__terminal_record_history_cmd; __terminal_set_title_pwd; ${PROMPT_COMMAND}"
 else
-    PROMPT_COMMAND="__terminal_set_title_pwd"
+    PROMPT_COMMAND="__terminal_record_history_cmd; __terminal_set_title_pwd"
 fi
 "#,
             )?;
