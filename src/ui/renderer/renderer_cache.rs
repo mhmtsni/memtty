@@ -17,6 +17,10 @@ pub(super) fn update_last_grid_snapshot(
             row.len(),
             CellKey {
                 c: ' ',
+                wide_continuation: false,
+                text_hash: 0,
+                hyperlink_hash: 0,
+                is_link_hovered: false,
                 fg: 0,
                 bg: 0,
                 style: 0,

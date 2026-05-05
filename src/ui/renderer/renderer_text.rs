@@ -1,4 +1,4 @@
-use super::{Attrs, Cell, Color, Shaping};
+use super::{Attrs, Cell, Color};
 use super::{attrs_equal, build_attrs, contrast_text_color, effective_colors, font_family};
 
 pub(super) fn rebuild_text_spans(
@@ -17,7 +17,7 @@ pub(super) fn rebuild_text_spans(
     for (row_i, row) in rows.iter().enumerate() {
         let last_non_space = row
             .iter()
-            .rposition(|c| c.c != ' ')
+            .rposition(|c| !c.is_blank())
             .map(|i| i + 1)
             .unwrap_or(0);
 
@@ -31,16 +31,20 @@ pub(super) fn rebuild_text_spans(
             }
 
             let attrs = build_attrs(cell, fg, renderer.font_family_name);
+            let text = cell.display_text();
+            if text.is_empty() {
+                continue;
+            }
 
             if span_count > 0 && attrs_equal(&renderer.spans_cache[span_count - 1].1, &attrs) {
-                renderer.spans_cache[span_count - 1].0.push(cell.c);
+                renderer.spans_cache[span_count - 1].0.push_str(text);
             } else {
                 if span_count < renderer.spans_cache.len() {
                     renderer.spans_cache[span_count].0.clear();
-                    renderer.spans_cache[span_count].0.push(cell.c);
+                    renderer.spans_cache[span_count].0.push_str(text);
                     renderer.spans_cache[span_count].1 = attrs;
                 } else {
-                    renderer.spans_cache.push((cell.c.to_string(), attrs));
+                    renderer.spans_cache.push((text.to_string(), attrs));
                 }
                 span_count += 1;
             }
@@ -70,13 +74,14 @@ pub(super) fn rebuild_text_spans(
 
     let active_span_count = span_count.min(renderer.spans_cache.len());
     let active_spans = &renderer.spans_cache[..active_span_count];
+    let shaping_mode = renderer.shaping_mode();
     renderer.buffer.set_rich_text(
         &mut renderer.font_system,
         active_spans.iter().map(|(s, a)| (s.as_str(), a.clone())),
         &Attrs::new()
             .family(font_family(renderer.font_family_name))
             .color(Color::rgb(229, 229, 229)),
-        Shaping::Basic,
+        shaping_mode,
         None::<glyphon::cosmic_text::Align>,
     );
     renderer.needs_shape = true;

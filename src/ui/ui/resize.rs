@@ -7,21 +7,18 @@ impl MyApp {
             return;
         };
 
-        let width = size.width as f32;
-        let height = size.height as f32;
-        let (cell_width, line_height) = self.renderer.cell_size();
-        let content_width = (width - 2.0 * TERMINAL_PADDING_X).max(0.0);
-        let content_height = (height - TAB_HEIGHT as f32 - 2.0 * TERMINAL_PADDING_Y).max(0.0);
-
-        let new_cols = (content_width / cell_width).floor().max(10.0) as u16;
-        let new_rows = (content_height / line_height).floor().max(5.0) as u16;
+        let (new_cols, new_rows) = self.terminal_grid_size_for_pixels(size.width, size.height);
 
         self.resize_all_tabs(new_cols, new_rows);
 
         self.renderer.resize(size.width, size.height);
 
-        let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
-        self.scroll_offset = self.scroll_offset.min(max_offset).max(0);
+        let max_offset = self.session.tabs[active_tab]
+            .terminal
+            .performer
+            .scrollback
+            .len() as i32;
+        self.session.scroll_offset = self.session.scroll_offset.min(max_offset).max(0);
         self.sync_renderer_from_terminal(true);
     }
 
@@ -30,18 +27,28 @@ impl MyApp {
             return;
         };
 
-        let (cell_width, line_height) = self.renderer.cell_size();
-        let content_width = (self.renderer.width as f32 - 2.0 * TERMINAL_PADDING_X).max(0.0);
-        let content_height =
-            (self.renderer.height as f32 - TAB_HEIGHT as f32 - 2.0 * TERMINAL_PADDING_Y).max(0.0);
-        let new_cols = (content_width / cell_width).floor().max(10.0) as u16;
-        let new_rows = (content_height / line_height).floor().max(5.0) as u16;
+        let (new_cols, new_rows) =
+            self.terminal_grid_size_for_pixels(self.renderer.width, self.renderer.height);
 
         self.resize_all_tabs(new_cols, new_rows);
 
-        let max_offset = self.tabs[active_tab].terminal.performer.scrollback.len() as i32;
-        self.scroll_offset = self.scroll_offset.min(max_offset).max(0);
+        let max_offset = self.session.tabs[active_tab]
+            .terminal
+            .performer
+            .scrollback
+            .len() as i32;
+        self.session.scroll_offset = self.session.scroll_offset.min(max_offset).max(0);
         self.sync_renderer_from_terminal(true);
     }
-}
 
+    fn terminal_grid_size_for_pixels(&self, width: u32, height: u32) -> (u16, u16) {
+        let (cell_width, line_height) = self.renderer.cell_size();
+        let content_width = (width as f32 - 2.0 * TERMINAL_PADDING_X).max(0.0);
+        let content_height =
+            (height as f32 - TAB_HEIGHT as f32 - 2.0 * TERMINAL_PADDING_Y).max(0.0);
+        let new_cols = (content_width / cell_width).floor().max(10.0) as u16;
+        let new_rows = (content_height / line_height).floor().max(5.0) as u16;
+
+        (new_cols, new_rows)
+    }
+}

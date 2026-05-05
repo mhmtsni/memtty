@@ -117,6 +117,28 @@ fn test_partial_top_anchored_scroll_region_does_not_shift_rows_below_region() {
 }
 
 #[test]
+fn test_scroll_up_honors_scroll_region() {
+    let mut t = term();
+
+    t.process(b"\x1b[24;1H\x1b[30;42mS\x1b[m");
+    t.process(b"\x1b[2;23r\x1b[22S");
+
+    assert_eq!(t.performer.grid[23][0].c, 'S');
+    assert_eq!(t.performer.grid[23][0].bg, Color::rgb(0, 205, 0));
+}
+
+#[test]
+fn test_scroll_down_honors_scroll_region() {
+    let mut t = term();
+
+    t.process(b"\x1b[24;1H\x1b[30;42mS\x1b[m");
+    t.process(b"\x1b[2;23r\x1b[22T");
+
+    assert_eq!(t.performer.grid[23][0].c, 'S');
+    assert_eq!(t.performer.grid[23][0].bg, Color::rgb(0, 205, 0));
+}
+
+#[test]
 fn test_erase_line() {
     let mut t = term();
     t.process(b"Hello\x1b[2K"); // write then erase whole line
@@ -231,11 +253,40 @@ fn test_visible_rows_with_scrollback_offset_shows_scrollback() {
 }
 
 #[test]
+fn test_visible_row_window_reports_expected_bounds() {
+    let mut t = term();
+    t.process(b"\x1b[24;1H\n");
+    let window = t
+        .visible_row_window(1, 3)
+        .expect("row window should exist for non-empty terminal");
+    assert_eq!(
+        window.total_rows,
+        t.performer.scrollback.len() + t.performer.grid.len()
+    );
+    assert_eq!(window.scrollback_len, t.performer.scrollback.len());
+    assert!(window.start <= window.end);
+}
+
+#[test]
 fn test_osc_title_rejoins_semicolons() {
     let mut t = term();
     // OSC 2;hello;world ST
     t.process(b"\x1b]2;hello;world\x07");
     assert_eq!(t.performer.title, "hello;world");
+}
+
+#[test]
+fn test_tmux_dcs_passthrough_dispatches_wrapped_osc() {
+    let mut t = term();
+    t.process(b"\x1bPtmux;\x1b\x1b]2;from tmux\x07\x1b\\");
+    assert_eq!(t.performer.title, "from tmux");
+}
+
+#[test]
+fn test_tmux_dcs_passthrough_dispatches_wrapped_csi() {
+    let mut t = term();
+    t.process(b"\x1bPtmux;\x1b\x1b[?25l\x1b\\");
+    assert!(!t.performer.cursor_visible);
 }
 
 #[test]
@@ -264,3 +315,106 @@ fn test_parse_color_spec_rgb_colon_form() {
     assert_eq!(parse_color_spec("rgb:ff/00"), None);
 }
 
+#[test]
+fn test_sgr_mouse_1006_enable_disable_is_not_toggle() {
+    let mut t = term();
+
+    t.process(b"\x1b[?1006h");
+    assert!(t.performer.sgr_mouse);
+
+    t.process(b"\x1b[?1006h");
+    assert!(t.performer.sgr_mouse);
+
+    t.process(b"\x1b[?1006l");
+    assert!(!t.performer.sgr_mouse);
+
+    t.process(b"\x1b[?1006l");
+    assert!(!t.performer.sgr_mouse);
+}
+
+#[test]
+fn test_wide_char_advances_by_two_cells() {
+    let mut t = term();
+    t.process("中A".as_bytes());
+
+    assert_eq!(t.performer.grid[0][0].c, '中');
+    assert!(t.performer.grid[0][1].wide_continuation);
+    assert_eq!(t.performer.grid[0][2].c, 'A');
+    assert_eq!(t.performer.cursor_x, 3);
+}
+
+#[test]
+fn test_combining_mark_does_not_advance_cursor() {
+    let mut t = term();
+    t.process("e\u{0301}X".as_bytes());
+
+    assert_eq!(t.performer.grid[0][0].c, 'e');
+    assert_eq!(t.performer.grid[0][1].c, 'X');
+    assert_eq!(t.performer.cursor_x, 2);
+}
+
+#[test]
+fn test_hts_sets_tab_stop() {
+    let mut t = term();
+    t.process(b"\x1b[5G\x1bH\r\tX");
+    assert_eq!(t.performer.cursor_x, 5);
+    assert_eq!(t.performer.grid[0][4].c, 'X');
+}
+
+#[test]
+fn test_rep_repeats_last_printed_char() {
+    let mut t = term();
+    t.process(b"A\x1b[3b");
+    assert_eq!(t.performer.grid[0][0].c, 'A');
+    assert_eq!(t.performer.grid[0][1].c, 'A');
+    assert_eq!(t.performer.grid[0][2].c, 'A');
+    assert_eq!(t.performer.grid[0][3].c, 'A');
+}
+
+#[test]
+fn test_insert_mode_shifts_cells_right() {
+    let mut t = term();
+    t.process(b"ABCD\r\x1b[4hZ\x1b[4l");
+
+    assert_eq!(t.performer.grid[0][0].c, 'Z');
+    assert_eq!(t.performer.grid[0][1].c, 'A');
+    assert_eq!(t.performer.grid[0][2].c, 'B');
+    assert_eq!(t.performer.grid[0][3].c, 'C');
+}
+
+#[test]
+fn test_single_emoji_prints_as_double_width_grapheme() {
+    let mut t = term();
+    t.process("🙂".as_bytes());
+
+    assert_eq!(t.performer.grid[0][0].text, "🙂");
+    assert!(t.performer.grid[0][1].wide_continuation);
+    assert_eq!(t.performer.cursor_x, 2);
+}
+
+#[test]
+fn test_emoji_zwj_sequence_is_single_cell_grapheme() {
+    let mut t = term();
+    t.process("👨‍👩‍👧‍👦X".as_bytes());
+
+    assert_eq!(t.performer.grid[0][0].text, "👨‍👩‍👧‍👦");
+    assert!(t.performer.grid[0][1].wide_continuation);
+    assert_eq!(t.performer.grid[0][2].text, "X");
+    assert_eq!(t.performer.cursor_x, 3);
+}
+
+#[test]
+fn test_osc8_hyperlink_is_attached_to_cells_until_close() {
+    let mut t = term();
+    t.process(b"\x1b]8;;https://example.com\x07hi\x1b]8;;\x07x");
+
+    assert_eq!(
+        t.performer.grid[0][0].hyperlink.as_deref(),
+        Some("https://example.com")
+    );
+    assert_eq!(
+        t.performer.grid[0][1].hyperlink.as_deref(),
+        Some("https://example.com")
+    );
+    assert_eq!(t.performer.grid[0][2].hyperlink, None);
+}

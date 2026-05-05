@@ -9,6 +9,11 @@ use super::{
     colors::{DEFAULT_BG, DEFAULT_FG, MAX_SCROLLBACK, default_palette_256, parse_color_spec},
 };
 
+mod control;
+mod csi;
+mod osc;
+mod print;
+
 const DEFAULT_ROWS: usize = 24;
 const DEFAULT_COLS: usize = 80;
 
@@ -100,9 +105,17 @@ pub struct Performer {
     // pending wrap: next print will first advance to next line
     pub(super) pending_wrap: bool,
     focus_enable: bool,
+    insert_mode: bool,
+    tab_stops: Vec<bool>,
+    last_printed: Option<char>,
+    last_cell_pos: Option<(usize, usize)>,
+    join_next_to_last_cell: bool,
+    current_hyperlink: Option<String>,
 
     // Bytes that should be written back to the PTY (DA/DSR replies, etc.).
     pty_replies: Vec<Vec<u8>>,
+
+    tmux_dcs_buffer: Option<Vec<u8>>,
 
     pub title: String,
 }
@@ -116,6 +129,10 @@ impl Default for Performer {
         let default_bg = DEFAULT_BG;
         let default_cell = Cell {
             c: ' ',
+            text: " ".to_string(),
+            wide_continuation: false,
+            hyperlink: None,
+            is_link_hovered: false,
             fg: default_fg,
             is_selected: false,
             bg: default_bg,
@@ -155,7 +172,14 @@ impl Default for Performer {
             use_g1_charset: false,
             pending_wrap: false,
             focus_enable: false,
+            insert_mode: false,
+            tab_stops: (0..cols).map(|i| i % 8 == 0).collect(),
+            last_printed: None,
+            last_cell_pos: None,
+            join_next_to_last_cell: false,
+            current_hyperlink: None,
             pty_replies: Vec::new(),
+            tmux_dcs_buffer: None,
         }
     }
 }
@@ -194,9 +218,42 @@ impl Performer {
         self.pty_replies.push(bytes);
     }
 
+    fn decode_tmux_dcs_passthrough(bytes: &[u8]) -> Option<Vec<u8>> {
+        let inner = bytes.strip_prefix(b"mux;")?;
+        let mut decoded = Vec::with_capacity(inner.len());
+        let mut i = 0;
+
+        while i < inner.len() {
+            if inner[i] == 0x1b && inner.get(i + 1) == Some(&0x1b) {
+                decoded.push(0x1b);
+                i += 2;
+            } else {
+                decoded.push(inner[i]);
+                i += 1;
+            }
+        }
+
+        Some(decoded)
+    }
+
+    fn apply_tmux_dcs_passthrough(&mut self, bytes: &[u8]) {
+        let Some(decoded) = Self::decode_tmux_dcs_passthrough(bytes) else {
+            return;
+        };
+
+        let mut parser = vte::Parser::new();
+        parser.advance(self, &decoded);
+    }
+
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
         self.cols = new_cols;
         self.rows = new_rows;
+        self.tab_stops.resize(new_cols, false);
+        for (i, stop) in self.tab_stops.iter_mut().enumerate() {
+            if i % 8 == 0 {
+                *stop = true;
+            }
+        }
         self.normalize_grid_dimensions();
         self.scroll_top = 0;
         self.scroll_bottom = new_rows - 1;
@@ -206,14 +263,18 @@ impl Performer {
     fn normalize_grid_dimensions(&mut self) {
         let blank = Cell {
             c: ' ',
+            text: " ".to_string(),
+            wide_continuation: false,
+            hyperlink: None,
+            is_link_hovered: false,
             fg: self.current_fg,
             bg: self.current_bg,
             is_selected: false,
             style: 0,
         };
-        self.grid.resize(self.rows, vec![blank; self.cols]);
+        self.grid.resize(self.rows, vec![blank.clone(); self.cols]);
         for row in &mut self.grid {
-            row.resize(self.cols, blank);
+            row.resize(self.cols, blank.clone());
         }
     }
 
@@ -230,6 +291,10 @@ impl Performer {
     fn empty_cell(&self) -> Cell {
         Cell {
             c: ' ',
+            text: " ".to_string(),
+            wide_continuation: false,
+            hyperlink: None,
+            is_link_hovered: false,
             fg: self.current_fg,
             bg: self.current_bg,
             is_selected: false,
@@ -283,27 +348,6 @@ impl Performer {
         }
     }
 
-    // kept for CSI S / T (which scroll the whole visible area)
-    fn scroll_up(&mut self, n: usize) {
-        let saved_top = self.scroll_top;
-        let saved_bot = self.scroll_bottom;
-        self.scroll_top = 0;
-        self.scroll_bottom = self.rows - 1;
-        self.scroll_up_region(n);
-        self.scroll_top = saved_top;
-        self.scroll_bottom = saved_bot;
-    }
-
-    fn scroll_down(&mut self, n: usize) {
-        let saved_top = self.scroll_top;
-        let saved_bot = self.scroll_bottom;
-        self.scroll_top = 0;
-        self.scroll_bottom = self.rows - 1;
-        self.scroll_down_region(n);
-        self.scroll_top = saved_top;
-        self.scroll_bottom = saved_bot;
-    }
-
     // ── cursor save / restore ───────────────────────────────────────────────
 
     fn save_cursor(&mut self) {
@@ -344,6 +388,10 @@ impl Performer {
         // Save normal screen
         let blank = Cell {
             c: ' ',
+            text: " ".to_string(),
+            wide_continuation: false,
+            hyperlink: None,
+            is_link_hovered: false,
             fg: self.current_fg,
             bg: self.current_bg,
             is_selected: false,
@@ -473,6 +521,22 @@ impl Performer {
             _ => {}
         }
     }
+
+    fn append_to_last_cell_grapheme(&mut self, c: char) -> bool {
+        let Some((x, y)) = self.last_cell_pos else {
+            return false;
+        };
+        if y >= self.grid.len() || x >= self.grid[y].len() {
+            return false;
+        }
+
+        let cell = &mut self.grid[y][x];
+        if cell.wide_continuation {
+            return false;
+        }
+        cell.text.push(c);
+        true
+    }
 }
 
 // ─── vte::Perform implementation ─────────────────────────────────────────────
@@ -480,146 +544,19 @@ impl Performer {
 impl Perform for Performer {
     // ── printable character ─────────────────────────────────────────────────
     fn print(&mut self, c: char) {
-        let c = self.translate_char(c);
-
-        if self.pending_wrap && self.auto_wrap {
-            self.cursor_x = 0;
-            self.cursor_y += 1;
-            if self.cursor_y > self.scroll_bottom {
-                self.scroll_up_region(1);
-                self.cursor_y = self.scroll_bottom;
-            }
-            self.pending_wrap = false;
-        }
-
-        if self.cursor_y < self.grid.len() {
-            let row_len = self.grid[self.cursor_y].len();
-            if self.cursor_x >= row_len {
-                return;
-            }
-
-            self.grid[self.cursor_y][self.cursor_x] = Cell {
-                c,
-                fg: self.current_fg,
-                bg: self.current_bg,
-                is_selected: false,
-                style: self.current_style,
-            };
-
-            if self.cursor_x + 1 >= row_len {
-                // Reached last column — defer wrap until next print
-                self.pending_wrap = true;
-            } else {
-                self.cursor_x += 1;
-            }
-        }
+        self.print_char(c);
     }
 
     // ── C0 / C1 control codes ───────────────────────────────────────────────
 
     fn execute(&mut self, byte: u8) {
-        match byte {
-            // LF / VT / FF  — newline with scroll
-            b'\n' | 0x0B | 0x0C => {
-                self.pending_wrap = false;
-                if self.cursor_y == self.scroll_bottom {
-                    self.scroll_up_region(1);
-                } else {
-                    self.cursor_y = (self.cursor_y + 1).min(self.rows - 1);
-                }
-            }
-            b'\r' => {
-                self.cursor_x = 0;
-                self.pending_wrap = false;
-            }
-            b'\t' => {
-                let tab_width = 8;
-                let next_tab = ((self.cursor_x / tab_width) + 1) * tab_width;
-                self.cursor_x = next_tab.min(self.cols - 1);
-                self.pending_wrap = false;
-            }
-            // BS
-            0x08 => {
-                if self.cursor_x > 0 {
-                    self.cursor_x -= 1;
-                }
-                self.pending_wrap = false;
-            }
-            // DEL — ignored
-            0x7F => {}
-            // BEL — bell (callers can poll cursor_visible / add a bell flag)
-            0x07 => {}
-            // SO/SI — shift out/in: select G1/G0 into GL.
-            0x0E => self.use_g1_charset = true,
-            0x0F => self.use_g1_charset = false,
-            _ => {}
-        }
+        self.execute_control(byte);
     }
 
     // ── ESC sequences (not CSI, not OSC) ───────────────────────────────────
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
-        match (intermediates.first().copied(), byte) {
-            // DECSC — save cursor
-            (None, b'7') => self.save_cursor(),
-            // DECRC — restore cursor
-            (None, b'8') => self.restore_cursor(),
-
-            // IND — index (like LF, but ignores LNM)
-            (None, b'D') => {
-                if self.cursor_y == self.scroll_bottom {
-                    self.scroll_up_region(1);
-                } else {
-                    self.cursor_y = (self.cursor_y + 1).min(self.rows - 1);
-                }
-            }
-            // NEL — next line
-            (None, b'E') => {
-                self.cursor_x = 0;
-                if self.cursor_y == self.scroll_bottom {
-                    self.scroll_up_region(1);
-                } else {
-                    self.cursor_y = (self.cursor_y + 1).min(self.rows - 1);
-                }
-            }
-            // RI — reverse index (scroll down if at top of scroll region)
-            (None, b'M') => {
-                if self.cursor_y == self.scroll_top {
-                    self.scroll_down_region(1);
-                } else {
-                    self.cursor_y = self.cursor_y.saturating_sub(1);
-                }
-            }
-            // HTS — set horizontal tab stop (stub: we use fixed 8-col tabs)
-            (None, b'H') => {}
-
-            // RIS — full reset
-            (None, b'c') => {
-                *self = Performer::default();
-            }
-
-            // DECALN — fill screen with 'E' (alignment test)
-            (Some(b'#'), b'8') => {
-                for row in &mut self.grid {
-                    for cell in row.iter_mut() {
-                        cell.c = 'E';
-                    }
-                }
-            }
-
-            // Charset designations — G0/G1.
-            (Some(b'('), designator) => {
-                self.g0_charset = charset_from_designator(designator);
-            }
-            (Some(b')'), designator) => {
-                self.g1_charset = charset_from_designator(designator);
-            }
-
-            // G2/G3 designations are currently ignored.
-            (Some(b'*'), _) | (Some(b'+'), _) => {}
-
-            _ => {}
-        }
+        self.dispatch_escape(intermediates, byte);
     }
 
     // ── CSI sequences ───────────────────────────────────────────────────────
@@ -631,450 +568,31 @@ impl Perform for Performer {
         _ignore: bool,
         action: char,
     ) {
-        // Flatten params into a simple Vec<u16>.
-        let params_vec: Vec<u16> = params
-            .iter()
-            .map(|sub| sub.first().copied().unwrap_or(0))
-            .collect();
-
-        let p = |idx: usize| params_vec.get(idx).copied().unwrap_or(0) as usize;
-        let p1 = |idx: usize| p(idx).max(1); // param defaulting to 1
-
-        // Private sequences: CSI ? ...
-        if intermediates.first() == Some(&b'?') {
-            match action {
-                'h' => {
-                    for &mode in &params_vec {
-                        self.set_dec_mode(mode as usize, true);
-                    }
-                }
-                'l' => {
-                    for &mode in &params_vec {
-                        self.set_dec_mode(mode as usize, false);
-                    }
-                }
-                // DEC DSR replies.
-                'n' => {
-                    for &code in &params_vec {
-                        match code {
-                            5 => self.queue_pty_reply(b"\x1b[?0n".to_vec()),
-                            6 => {
-                                let row = self.cursor_y + 1;
-                                let col = self.cursor_x + 1;
-                                self.queue_pty_reply(
-                                    format!("\x1b[?{};{}R", row, col).into_bytes(),
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                // DECTCEM aliases handled inside set_dec_mode (mode 25)
-                _ => {}
-            }
-            return;
-        }
-
-        // CSI > — secondary DA / xterm version
-        if intermediates.first() == Some(&b'>') {
-            if action == 'c' {
-                self.queue_pty_reply(b"\x1b[>0;0;0c".to_vec());
-            }
-            return;
-        }
-
-        match action {
-            // ── Cursor movement ─────────────────────────────────────────────
-            // CUU — cursor up
-            'A' => {
-                let n = p1(0);
-                self.cursor_y = self.cursor_y.saturating_sub(n).max(self.scroll_top);
-                self.pending_wrap = false;
-            }
-            // CUD — cursor down
-            'B' => {
-                let n = p1(0);
-                self.cursor_y = (self.cursor_y + n).min(self.scroll_bottom);
-                self.pending_wrap = false;
-            }
-            // CUF — cursor forward
-            'C' => {
-                let n = p1(0);
-                self.cursor_x = (self.cursor_x + n).min(self.cols - 1);
-                self.pending_wrap = false;
-            }
-            // CUB — cursor backward
-            'D' => {
-                let n = p1(0);
-                self.cursor_x = self.cursor_x.saturating_sub(n);
-                self.pending_wrap = false;
-            }
-            // CNL — cursor next line
-            'E' => {
-                let n = p1(0);
-                self.cursor_y = (self.cursor_y + n).min(self.rows - 1);
-                self.cursor_x = 0;
-                self.pending_wrap = false;
-            }
-            // CPL — cursor previous line
-            'F' => {
-                let n = p1(0);
-                self.cursor_y = self.cursor_y.saturating_sub(n);
-                self.cursor_x = 0;
-                self.pending_wrap = false;
-            }
-            // CHA — cursor horizontal absolute
-            'G' => {
-                self.cursor_x = (p1(0) - 1).min(self.cols - 1);
-                self.pending_wrap = false;
-            }
-            // CUP / HVP — cursor position
-            'H' | 'f' => {
-                let row = (p1(0) - 1).min(self.rows - 1);
-                let col = (p1(1) - 1).min(self.cols - 1);
-                self.cursor_y = if self.origin_mode {
-                    (self.scroll_top + row).min(self.scroll_bottom)
-                } else {
-                    row
-                };
-                self.cursor_x = col;
-                self.pending_wrap = false;
-            }
-            // VPA — vertical line position absolute
-            'd' => {
-                let row = (p1(0) - 1).min(self.rows - 1);
-                self.cursor_y = if self.origin_mode {
-                    (self.scroll_top + row).min(self.scroll_bottom)
-                } else {
-                    row
-                };
-                self.pending_wrap = false;
-            }
-            // HPA — horizontal position absolute (same as CHA)
-            '`' => {
-                self.cursor_x = (p1(0) - 1).min(self.cols - 1);
-                self.pending_wrap = false;
-            }
-
-            // ── Erase ───────────────────────────────────────────────────────
-            // ED — erase in display
-            'J' => {
-                let empty = self.empty_cell();
-                match p(0) {
-                    0 => {
-                        // erase from cursor to end of screen
-                        if self.cursor_y < self.grid.len() {
-                            let row_len = self.grid[self.cursor_y].len();
-                            for x in self.cursor_x..row_len {
-                                self.grid[self.cursor_y][x] = empty;
-                            }
-                        }
-                        for y in (self.cursor_y + 1)..self.grid.len() {
-                            self.grid[y] = self.empty_row();
-                        }
-                    }
-                    1 => {
-                        // erase from start to cursor
-                        for y in 0..self.cursor_y.min(self.grid.len()) {
-                            self.grid[y] = self.empty_row();
-                        }
-                        if self.cursor_y < self.grid.len() {
-                            let end = (self.cursor_x + 1).min(self.grid[self.cursor_y].len());
-                            for x in 0..end {
-                                self.grid[self.cursor_y][x] = empty;
-                            }
-                        }
-                    }
-                    2 | 3 => {
-                        // erase whole screen (3 also clears scrollback)
-                        if p(0) == 3 {
-                            self.scrollback.clear();
-                        }
-                        let blank_row = self.empty_row();
-                        for row in self.grid.iter_mut() {
-                            *row = blank_row.clone();
-                        }
-                        self.cursor_x = 0;
-                        self.cursor_y = 0;
-                        self.pending_wrap = false;
-                    }
-                    _ => {}
-                }
-            }
-            // EL — erase in line
-            'K' => {
-                let empty = self.empty_cell();
-                if self.cursor_y >= self.grid.len() {
-                    return;
-                }
-                match p(0) {
-                    0 => {
-                        // erase to end of line
-                        for x in self.cursor_x..self.cols {
-                            self.grid[self.cursor_y][x] = empty;
-                        }
-                    }
-                    1 => {
-                        // erase to start of line
-                        for x in 0..=self.cursor_x.min(self.cols - 1) {
-                            self.grid[self.cursor_y][x] = empty;
-                        }
-                    }
-                    2 => self.grid[self.cursor_y] = self.empty_row(),
-                    _ => {}
-                }
-            }
-            // ECH — erase character
-            'X' => {
-                let empty = self.empty_cell();
-                let n = p1(0);
-                for x in self.cursor_x..(self.cursor_x + n).min(self.cols) {
-                    self.grid[self.cursor_y][x] = empty;
-                }
-            }
-
-            // ── Scroll ──────────────────────────────────────────────────────
-            // SU — scroll up
-            'S' => self.scroll_up(p1(0)),
-            // SD — scroll down
-            'T' => self.scroll_down(p1(0)),
-
-            // ── Line insertion / deletion ───────────────────────────────────
-            // IL — insert lines
-            'L' => {
-                let n = p1(0);
-                if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
-                    for _ in 0..n {
-                        if self.scroll_bottom < self.grid.len() {
-                            self.grid.remove(self.scroll_bottom);
-                        }
-                        self.grid.insert(self.cursor_y, self.empty_row());
-                    }
-                }
-                self.cursor_x = 0;
-                self.pending_wrap = false;
-            }
-            // DL — delete lines
-            'M' => {
-                let n = p1(0);
-                for _ in 0..n {
-                    if self.cursor_y < self.grid.len() {
-                        self.grid.remove(self.cursor_y);
-                    }
-                    let ins = (self.scroll_bottom + 1).min(self.grid.len());
-                    self.grid.insert(ins, self.empty_row());
-                }
-                self.cursor_x = 0;
-                self.pending_wrap = false;
-            }
-
-            // ── Character insertion / deletion ─────────────────────────────
-            // DCH — delete characters
-            'P' => {
-                let empty = self.empty_cell();
-                let n = p1(0);
-                if self.cursor_y < self.grid.len() {
-                    let row = &mut self.grid[self.cursor_y];
-                    for _ in 0..n {
-                        if self.cursor_x < row.len() {
-                            row.remove(self.cursor_x);
-                            row.push(empty);
-                        }
-                    }
-                }
-            }
-            // ICH — insert blank characters
-            '@' => {
-                let empty = self.empty_cell();
-                let n = p1(0);
-                if self.cursor_y < self.grid.len() {
-                    let row = &mut self.grid[self.cursor_y];
-                    for _ in 0..n {
-                        if row.len() >= self.cols {
-                            row.pop();
-                        }
-                        row.insert(self.cursor_x, empty);
-                    }
-                }
-            }
-            // REP — repeat last printed character
-            'b' => {
-                let n = p1(0);
-                // We'd need to store the last printed char; approximate with space.
-                // For a proper impl, store `last_char: char` in Performer.
-                let _ = n; // stub
-            }
-
-            // ── Cursor style (DECSCUSR) ─────────────────────────────────────
-            'q' if intermediates.first() == Some(&b' ') => {
-                match p(0) {
-                    0 | 1 | 2 => self.cursor_style = CursorStyle::Block,
-                    3 | 4 => self.cursor_style = CursorStyle::Underline,
-                    5 | 6 => self.cursor_style = CursorStyle::Bar,
-                    _ => {}
-                }
-                self.cursor_blinking = matches!(p(0), 0 | 1 | 3 | 5);
-            }
-
-            // ── Save / restore cursor (SCP / RCP) ───────────────────────────
-            's' => self.save_cursor(),
-            'u' => self.restore_cursor(),
-
-            // ── Scroll region (DECSTBM) ─────────────────────────────────────
-            'r' => {
-                let top = p1(0).saturating_sub(1);
-                let bot = if p(1) == 0 { self.rows - 1 } else { p(1) - 1 };
-                if top < bot && bot < self.rows {
-                    self.scroll_top = top;
-                    self.scroll_bottom = bot;
-                }
-                // Cursor to home after setting scroll region
-                self.cursor_x = 0;
-                self.cursor_y = if self.origin_mode { self.scroll_top } else { 0 };
-                self.pending_wrap = false;
-            }
-
-            // ── Device status report (DSR) ──────────────────────────────────
-            'n' => {
-                for &code in &params_vec {
-                    match code {
-                        5 => self.queue_pty_reply(b"\x1b[0n".to_vec()),
-                        6 => {
-                            let row = self.cursor_y + 1;
-                            let col = self.cursor_x + 1;
-                            self.queue_pty_reply(format!("\x1b[{};{}R", row, col).into_bytes());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            // ── Device attributes (DA) ──────────────────────────────────────
-            'c' => {
-                self.queue_pty_reply(b"\x1b[?1;2c".to_vec());
-            }
-
-            // ── SGR — Select Graphic Rendition ─────────────────────────────
-            'm' => {
-                self.apply_sgr(params);
-            }
-
-            // ── Mode set/reset (SM/RM) — public modes ──────────────────────
-            'h' => {
-                // e.g. CSI 4 h — insert mode (stub)
-            }
-            'l' => {
-                // e.g. CSI 4 l — replace mode (stub)
-            }
-
-            _ => {}
-        }
+        self.dispatch_csi(params, intermediates, action);
     }
 
     // ── OSC sequences ───────────────────────────────────────────────────────
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        // params[0] is the command number as ASCII bytes, params[1..] are args.
-        let cmd = params
-            .first()
-            .and_then(|b| std::str::from_utf8(b).ok())
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(u32::MAX);
-
-        let arg = |i: usize| -> &[u8] { params.get(i).copied().unwrap_or(b"") };
-
-        match cmd {
-            // OSC 0 / 1 / 2 — set icon name / title (callers can poll a title field)
-            0 | 1 | 2 => {
-                // vte splits OSC params on ';', so a title that contains ';'
-                // would be spread across params[1..]. Re-join with ';'.
-                if params.len() <= 1 {
-                    self.title.clear();
-                } else {
-                    let mut title_bytes: Vec<u8> = Vec::new();
-                    for (i, part) in params.iter().enumerate().skip(1) {
-                        if i > 1 {
-                            title_bytes.push(b';');
-                        }
-                        title_bytes.extend_from_slice(part);
-                    }
-                    self.title = String::from_utf8_lossy(&title_bytes).to_string();
-                }
-            }
-
-            // OSC 4 — set color palette entry
-            4 => {
-                let mut i = 1;
-                while i + 1 < params.len() {
-                    let idx_bytes = arg(i);
-                    let spec = arg(i + 1);
-                    if let (Ok(idx_str), Ok(spec_str)) =
-                        (std::str::from_utf8(idx_bytes), std::str::from_utf8(spec))
-                    {
-                        if let Ok(n) = idx_str.parse::<u8>() {
-                            if let Some(color) = parse_color_spec(spec_str) {
-                                self.palette_256[n as usize] = color;
-                            }
-                        }
-                    }
-                    i += 2;
-                }
-            }
-
-            // OSC 8 — hyperlink  (OSC 8 ; params ; uri ST text OSC 8 ;; ST)
-            // No rendering support needed here; ignore gracefully.
-            8 => {}
-
-            // OSC 10 — set / query default foreground color
-            10 => {
-                if let Ok(spec) = std::str::from_utf8(arg(1)) {
-                    if spec != "?" {
-                        if let Some(color) = parse_color_spec(spec) {
-                            let old = self.default_fg;
-                            self.default_fg = color;
-                            if self.current_fg == old {
-                                self.current_fg = color;
-                            }
-                        }
-                    }
-                }
-            }
-            // OSC 11 — set / query default background color
-            11 => {
-                if let Ok(spec) = std::str::from_utf8(arg(1)) {
-                    if spec != "?" {
-                        if let Some(color) = parse_color_spec(spec) {
-                            let old = self.default_bg;
-                            self.default_bg = color;
-                            if self.current_bg == old {
-                                self.current_bg = color;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // OSC 52 — clipboard access (security: ignore set, can't query)
-            52 => {}
-
-            // OSC 133 — shell integration marks (A/B/C/D prompts)
-            133 => {}
-
-            _ => {}
-        }
+        self.dispatch_osc(params);
     }
 
     // ── DCS sequences ───────────────────────────────────────────────────────
 
-    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
-        // DCS entry — e.g. DECRQSS, tmux passthrough
+    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, action: char) {
+        // Tmux wraps passthrough escapes as DCS "tmux;<escaped bytes>".
+        self.tmux_dcs_buffer = (action == 't').then(Vec::new);
     }
 
-    fn put(&mut self, _byte: u8) {
-        // DCS data byte
+    fn put(&mut self, byte: u8) {
+        if let Some(buffer) = &mut self.tmux_dcs_buffer {
+            buffer.push(byte);
+        }
     }
 
     fn unhook(&mut self) {
-        // DCS end
+        if let Some(buffer) = self.tmux_dcs_buffer.take() {
+            self.apply_tmux_dcs_passthrough(&buffer);
+        }
     }
 }

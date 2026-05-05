@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::ui::command_router::{ShortcutIntent, shortcut_intent_for_key};
 
 impl MyApp {
     pub fn handle_key_event(&mut self, event: KeyEvent, proxy: Option<EventLoopProxy<Message>>) {
@@ -6,91 +7,11 @@ impl MyApp {
             return;
         }
 
-        if self.modifiers.super_key()
-            && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("v"))
+        if let Some(intent) =
+            shortcut_intent_for_key(&event, self.modifiers, self.interaction.settings_panel_open)
         {
-            self.handle_paste();
+            self.apply_shortcut_intent(intent, proxy);
             return;
-        }
-
-        if matches!(event.logical_key, Key::Named(NamedKey::Enter)) && self.modifiers.super_key() {
-            self.full_screen = !self.full_screen;
-            let mode = if self.full_screen {
-                Some(Fullscreen::Borderless(None))
-            } else {
-                None
-            };
-            self.window.set_fullscreen(mode);
-            return;
-        }
-
-        if self.modifiers.super_key() {
-            if let Key::Character(c) = &event.logical_key {
-                match c.to_lowercase().as_str() {
-                    "+" | "=" => {
-                        let new_size = self.renderer.font_size + 2.0;
-                        self.renderer.set_font_size(new_size);
-                        self.refit_terminal_to_renderer();
-                        return;
-                    }
-                    "-" => {
-                        let new_size = self.renderer.font_size - 2.0;
-                        self.renderer.set_font_size(new_size);
-                        self.refit_terminal_to_renderer();
-                        return;
-                    }
-                    "0" => {
-                        self.renderer.reset_font_size();
-                        self.refit_terminal_to_renderer();
-                        return;
-                    }
-                    "t" => {
-                        if let Some(proxy) = proxy.clone() {
-                            self.create_new_tab(proxy);
-                        }
-                        return;
-                    }
-                    "w" => {
-                        if !self.close_active_tab() {
-                            if let Some(proxy) = proxy {
-                                let _ = proxy.send_event(Message::Exit);
-                            }
-                        }
-                        return;
-                    }
-                    "c" => {
-                        if self.copy_selection_to_clipboard() {
-                            return;
-                        }
-                        return;
-                    }
-                    "a" => {
-                        if self.select_all() {
-                            self.sync_renderer_from_terminal(true);
-                        }
-                        return;
-                    }
-                    _ => {
-                        if c.len() == 1 {
-                            if let Some(ch) = c.chars().next() {
-                                if ch.is_ascii_digit() && ch != '0' {
-                                    let index = ch.to_digit(10).unwrap() as usize - 1;
-
-                                    if index < self.tabs.len() {
-                                        self.active_tab = index;
-                                        self.clear_selection();
-                                        self.reset_scrollback_view();
-                                        self.sync_renderer_from_terminal(true);
-                                    }
-                                    return;
-                                }
-                            }
-                        }
-
-                        return;
-                    }
-                }
-            }
         }
 
         if let Some(bytes) = self.map_key_to_bytes(&event) {
@@ -109,21 +30,84 @@ impl MyApp {
         }
     }
 
+    fn apply_shortcut_intent(
+        &mut self,
+        intent: ShortcutIntent,
+        proxy: Option<EventLoopProxy<Message>>,
+    ) {
+        match intent {
+            ShortcutIntent::CloseSettings => {
+                self.close_settings_panel();
+                self.sync_renderer_from_terminal(true);
+            }
+            ShortcutIntent::Paste => self.handle_paste(),
+            ShortcutIntent::ToggleFullscreen => {
+                self.full_screen = !self.full_screen;
+                let mode = if self.full_screen {
+                    Some(Fullscreen::Borderless(None))
+                } else {
+                    None
+                };
+                self.window.set_fullscreen(mode);
+            }
+            ShortcutIntent::ToggleSettingsPanel => {
+                self.toggle_settings_panel();
+                self.sync_renderer_from_terminal(true);
+            }
+            ShortcutIntent::FontSizeStep(step) => {
+                self.renderer.set_font_size(self.renderer.font_size + step);
+                self.refit_terminal_to_renderer();
+            }
+            ShortcutIntent::FontSizeReset => {
+                self.renderer.reset_font_size();
+                self.refit_terminal_to_renderer();
+            }
+            ShortcutIntent::NewTab => {
+                if let Some(proxy) = proxy {
+                    self.create_new_tab(proxy);
+                }
+            }
+            ShortcutIntent::CloseTab => {
+                if !self.close_active_tab() {
+                    if let Some(proxy) = proxy {
+                        let _ = proxy.send_event(Message::Exit);
+                    }
+                }
+            }
+            ShortcutIntent::Copy => {
+                let _ = self.copy_selection_to_clipboard();
+            }
+            ShortcutIntent::SelectAll => {
+                if self.select_all() {
+                    self.sync_renderer_from_terminal(true);
+                }
+            }
+            ShortcutIntent::SwitchToTab(index) => {
+                if index < self.session.tabs.len() {
+                    self.session.active_tab = index;
+                    self.clear_selection();
+                    self.reset_scrollback_view();
+                    self.sync_renderer_from_terminal(true);
+                }
+            }
+        }
+    }
+
     fn map_key_to_bytes(&mut self, event: &KeyEvent) -> Option<Vec<u8>> {
         let key = &event.logical_key;
 
         match key {
             Key::Named(NamedKey::ArrowUp) if self.modifiers.alt_key() => {
-                Some(b"\x1b[1;5A".to_vec())
+                Some(b"\x1b[1;3A".to_vec())
             }
             Key::Named(NamedKey::ArrowDown) if self.modifiers.alt_key() => {
-                Some(b"\x1b[1;5B".to_vec())
+                Some(b"\x1b[1;3B".to_vec())
             }
             Key::Named(NamedKey::ArrowRight) if self.modifiers.alt_key() => {
-                Some(b"\x1b[1;5C".to_vec())
+                Some(b"\x1b[1;3C".to_vec())
             }
             Key::Named(NamedKey::ArrowLeft) if self.modifiers.alt_key() => {
-                Some(b"\x1b[1;5D".to_vec())
+                Some(b"\x1b[1;3D".to_vec())
             }
             Key::Named(NamedKey::Backspace) if self.modifiers.alt_key() => {
                 Some(b"\x1b\x7f".to_vec())

@@ -11,6 +11,8 @@ pub enum PtyInput {
 }
 
 const BUFF_CAPACITY: usize = 16 * 1024;
+const DEFAULT_TMUX_SESSION: &str = "memtty";
+const DEFAULT_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 fn unique_temp_dir(prefix: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let nanos = SystemTime::now()
@@ -27,6 +29,34 @@ fn basename(path: &str) -> &str {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(path)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+fn executable_in_path(name: &str) -> Option<String> {
+    if name.contains(std::path::MAIN_SEPARATOR) {
+        return Path::new(name).is_file().then(|| name.to_string());
+    }
+
+    let path = std::env::var_os("PATH")
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| DEFAULT_PATH.into());
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    paths.extend(std::env::split_paths(DEFAULT_PATH));
+
+    paths
+        .into_iter()
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 fn add_shell_integration(
@@ -79,7 +109,8 @@ add-zsh-hook preexec __terminal_set_title_cmd
             )?;
 
             cmd.env("ZDOTDIR", dir.to_string_lossy().to_string());
-            cmd.arg("-i");
+            cmd.arg("-l"); // login shell
+            cmd.arg("-i"); // interactive
         }
 
         // For bash we can force a custom rcfile that sources the user's normal
@@ -112,12 +143,34 @@ fi
 
             cmd.arg("--rcfile");
             cmd.arg(rc_path.to_string_lossy().to_string());
+            cmd.arg("--login");
             cmd.arg("-i");
         }
         _ => {}
     }
 
     Ok(())
+}
+
+fn shell_command(shell_path: &str) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(shell_path);
+
+    // Inject shell integration so bash/zsh update tab titles automatically.
+    let _ = add_shell_integration(&mut cmd, shell_path);
+
+    cmd
+}
+
+fn tmux_command(tmux_path: &str) -> CommandBuilder {
+    let session_name =
+        std::env::var("TERMINAL_TMUX_SESSION").unwrap_or_else(|_| DEFAULT_TMUX_SESSION.to_string());
+
+    let mut cmd = CommandBuilder::new(tmux_path);
+    cmd.arg("new-session");
+    cmd.arg("-A");
+    cmd.arg("-s");
+    cmd.arg(session_name);
+    cmd
 }
 
 pub fn run(
@@ -132,16 +185,25 @@ pub fn run(
         pixel_height: 1,
     })?;
 
-    // Spawn the shell (default to zsh; honor $SHELL when present)
+    // Spawn the shell (default to zsh; honor $SHELL when present), optionally
+    // attaching to a tmux session when TERMINAL_TMUX is enabled.
     let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
-    let mut cmd = CommandBuilder::new(shell_path.clone());
+    let mut cmd = if env_flag_enabled("TERMINAL_TMUX") {
+        if let Some(tmux_path) = executable_in_path("tmux") {
+            tmux_command(&tmux_path)
+        } else {
+            shell_command(&shell_path)
+        }
+    } else {
+        shell_command(&shell_path)
+    };
+
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM_PROGRAM", "custom-terminal");
     cmd.env("TERM_PROGRAM_VERSION", "0.1.0");
-
-    // Inject shell integration so bash/zsh update tab titles automatically.
-    let _ = add_shell_integration(&mut cmd, &shell_path);
+    cmd.env("SHELL", shell_path);
+    cmd.env("PATH", DEFAULT_PATH);
 
     let mut child = pair.slave.spawn_command(cmd)?;
 

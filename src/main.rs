@@ -4,5 +4,8 @@ mod terminal;
 mod ui;
 
 fn main() {
-    run().unwrap();
+    if let Err(err) = run() {
+        eprintln!("terminal failed to start: {err}");
+        std::process::exit(1);
+    }
 }

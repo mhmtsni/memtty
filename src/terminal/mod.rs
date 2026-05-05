@@ -20,6 +20,14 @@ mod sgr;
 pub use cell::Cell;
 pub use performer::{CursorStyle, Performer};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowWindow {
+    pub start: usize,
+    pub end: usize,
+    pub total_rows: usize,
+    pub scrollback_len: usize,
+}
+
 #[derive(Default)]
 pub struct Terminal {
     pub parser: Parser,
@@ -36,28 +44,42 @@ impl Terminal {
         self.performer.drain_pty_replies()
     }
 
-    // Visible rows for rendering, honoring scroll offset (positive = scrolled up).
-    pub fn visible_rows(&self, scroll_offset: i32, rows: usize) -> Vec<&Vec<Cell>> {
+    pub fn visible_row_window(&self, scroll_offset: i32, rows: usize) -> Option<RowWindow> {
         if rows == 0 {
-            return vec![];
+            return None;
         }
 
         let scrollback_len = self.performer.scrollback.len();
         let grid_len = self.performer.grid.len();
         let total_rows = scrollback_len + grid_len;
         if total_rows == 0 {
-            return vec![];
+            return None;
         }
 
         let offset = scroll_offset.max(0) as usize;
         let end = total_rows.saturating_sub(offset);
         let start = end.saturating_sub(rows);
-        (start..end)
+
+        Some(RowWindow {
+            start,
+            end,
+            total_rows,
+            scrollback_len,
+        })
+    }
+
+    // Visible rows for rendering, honoring scroll offset (positive = scrolled up).
+    pub fn visible_rows(&self, scroll_offset: i32, rows: usize) -> Vec<&Vec<Cell>> {
+        let Some(window) = self.visible_row_window(scroll_offset, rows) else {
+            return vec![];
+        };
+
+        (window.start..window.end)
             .map(|idx| {
-                if idx < scrollback_len {
+                if idx < window.scrollback_len {
                     &self.performer.scrollback[idx]
                 } else {
-                    &self.performer.grid[idx - scrollback_len]
+                    &self.performer.grid[idx - window.scrollback_len]
                 }
             })
             .collect()

@@ -35,8 +35,9 @@ impl MyApp {
         }
 
         let focus_reporting_enabled = self
+            .session
             .tabs
-            .get(self.active_tab)
+            .get(self.session.active_tab)
             .map(|tab| tab.terminal.performer.focus_reporting_enabled())
             .unwrap_or(false);
         self.has_focus = has_focus;
@@ -62,7 +63,7 @@ impl MyApp {
 
         let tx = spawn_pty_for_tab(tab_id, proxy);
 
-        self.tabs.push(Tab {
+        self.session.tabs.push(Tab {
             id: tab_id,
             terminal: Terminal::new(),
             tx: Some(tx),
@@ -70,10 +71,9 @@ impl MyApp {
             pending_pty_offset: 0,
         });
 
-        self.active_tab = self.tabs.len() - 1;
+        self.session.active_tab = self.session.tabs.len() - 1;
         self.clear_selection();
         self.handle_resize(self.window.inner_size());
         self.sync_renderer_from_terminal(true);
     }
 }
-

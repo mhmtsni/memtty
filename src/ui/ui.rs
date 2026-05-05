@@ -18,21 +18,26 @@ use crate::{
     ui::{
         renderer::{
             CursorRenderInfo, CursorRenderStyle, INDICATOR_WIDTH, Renderer,
-            ScrollIndicatorRenderInfo, TAB_HEIGHT, TERMINAL_PADDING_X, TERMINAL_PADDING_Y,
-            TabRenderInfo,
+            ScrollIndicatorRenderInfo, SettingsControlRenderKind, SettingsPanelRenderInfo,
+            TAB_HEIGHT, TERMINAL_PADDING_X, TERMINAL_PADDING_Y, TabRenderInfo,
         },
         terminal_view::spawn_pty_for_tab,
     },
 };
 
 mod clipboard;
+mod command_router;
 mod core;
 mod cursor;
 mod input;
+mod interaction_state;
 mod mouse;
+mod render_model;
 mod render_sync;
 mod resize;
 mod scroll;
+mod session_store;
+mod settings;
 
 #[derive(Clone, Debug)]
 pub enum Message {
@@ -53,59 +58,62 @@ pub struct Tab {
     pending_pty_offset: usize,
 }
 
-pub struct MyApp {
-    window: Arc<Window>,
+impl Tab {
+    pub fn new(id: usize, tx: Sender<PtyInput>) -> Self {
+        Self {
+            id,
+            terminal: Terminal::new(),
+            tx: Some(tx),
+            pending_pty: Vec::new(),
+            pending_pty_offset: 0,
+        }
+    }
+}
+
+pub struct SessionStore {
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
     pub scroll_offset: i32,
-    pub mouse_position: PhysicalPosition<f64>,
-    pub mouse_icon: CursorIcon,
-
-    mouse_button_held: Option<MouseButton>,
-    mouse_hold_start: Option<Instant>,
-    left_press_position: Option<PhysicalPosition<f64>>,
-    full_screen: bool,
-    modifiers: ModifiersState,
-    pub renderer: Renderer,
-    cursor_blink_on: bool,
-    last_blink: Instant,
-    pub has_focus: bool,
-    dragging_scroll_indicator: bool,
-    drag_start_y: f64,
-    drag_start_scroll_offset: i32,
-    scroll_indicator_last_interaction: Option<Instant>,
-    scroll_indicator_last_alpha: f32,
-    selection_start: Option<(usize, usize)>,
-    selection_end: Option<(usize, usize)>,
-    selecting: bool,
-    last_left_click_at: Option<Instant>,
-    last_left_click_cell: Option<(usize, usize)>,
-    left_click_streak: u8,
-    selection_mode: SelectionMode,
-    selection_anchor: Option<(usize, usize)>,
 }
 
-impl MyApp {
-    pub fn new(window: Arc<Window>, tx_to_pty: Sender<PtyInput>, renderer: Renderer) -> Self {
-        let mut app = Self {
-            full_screen: false,
-            mouse_icon: CursorIcon::Text,
-            tabs: vec![Tab {
-                id: 0,
-                terminal: Terminal::new(),
-                tx: Some(tx_to_pty),
-                pending_pty: Vec::new(),
-                pending_pty_offset: 0,
-            }],
+impl SessionStore {
+    pub fn new(initial_tab: Tab) -> Self {
+        Self {
+            tabs: vec![initial_tab],
             active_tab: 0,
-            mouse_position: PhysicalPosition::new(0.0, 0.0),
             scroll_offset: 0,
-            window,
-            modifiers: ModifiersState::empty(),
-            renderer,
-            cursor_blink_on: true,
-            last_blink: std::time::Instant::now(),
-            has_focus: true,
+        }
+    }
+}
+
+pub struct InteractionState {
+    pub mouse_position: PhysicalPosition<f64>,
+    pub mouse_icon: CursorIcon,
+    pub mouse_button_held: Option<MouseButton>,
+    pub mouse_hold_start: Option<Instant>,
+    pub left_press_position: Option<PhysicalPosition<f64>>,
+    pub dragging_scroll_indicator: bool,
+    pub drag_start_y: f64,
+    pub drag_start_scroll_offset: i32,
+    pub scroll_indicator_last_interaction: Option<Instant>,
+    pub scroll_indicator_last_alpha: f32,
+    pub selection_start: Option<(usize, usize)>,
+    pub selection_end: Option<(usize, usize)>,
+    pub selecting: bool,
+    pub last_left_click_at: Option<Instant>,
+    pub last_left_click_cell: Option<(usize, usize)>,
+    pub left_click_streak: u8,
+    pub selection_mode: SelectionMode,
+    pub selection_anchor: Option<(usize, usize)>,
+    pub settings_panel_open: bool,
+    pub link_settings: LinkInteractionSettings,
+}
+
+impl Default for InteractionState {
+    fn default() -> Self {
+        Self {
+            mouse_position: PhysicalPosition::new(0.0, 0.0),
+            mouse_icon: CursorIcon::Text,
             mouse_button_held: None,
             mouse_hold_start: None,
             left_press_position: None,
@@ -122,6 +130,57 @@ impl MyApp {
             left_click_streak: 0,
             selection_mode: SelectionMode::Char,
             selection_anchor: None,
+            settings_panel_open: false,
+            link_settings: LinkInteractionSettings::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct LinkInteractionSettings {
+    pub enable_hyperlinks: bool,
+    pub enable_plaintext_links: bool,
+    pub enable_hover_underline: bool,
+    pub enable_cmd_click_open: bool,
+    pub disable_in_alt_screen: bool,
+}
+
+impl Default for LinkInteractionSettings {
+    fn default() -> Self {
+        Self {
+            enable_hyperlinks: true,
+            enable_plaintext_links: true,
+            enable_hover_underline: true,
+            enable_cmd_click_open: true,
+            disable_in_alt_screen: true,
+        }
+    }
+}
+
+pub struct MyApp {
+    window: Arc<Window>,
+    pub session: SessionStore,
+    pub interaction: InteractionState,
+    full_screen: bool,
+    modifiers: ModifiersState,
+    pub renderer: Renderer,
+    cursor_blink_on: bool,
+    last_blink: Instant,
+    pub has_focus: bool,
+}
+
+impl MyApp {
+    pub fn new(window: Arc<Window>, tx_to_pty: Sender<PtyInput>, renderer: Renderer) -> Self {
+        let mut app = Self {
+            full_screen: false,
+            session: SessionStore::new(Tab::new(0, tx_to_pty)),
+            interaction: InteractionState::default(),
+            window,
+            modifiers: ModifiersState::empty(),
+            renderer,
+            cursor_blink_on: true,
+            last_blink: std::time::Instant::now(),
+            has_focus: true,
         };
 
         app.sync_renderer_from_terminal(true);

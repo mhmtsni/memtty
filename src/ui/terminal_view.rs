@@ -7,10 +7,10 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    window::{Theme, Window},
+    window::Window,
 };
 
-use crate::ui::{renderer::Renderer, ui::MyApp};
+use crate::ui::{renderer::Renderer, runtime_config::AppRuntimeConfig, ui::MyApp};
 
 pub struct TerminalView {
     pub app: Option<MyApp>,
@@ -73,13 +73,14 @@ impl ApplicationHandler<Message> for TerminalView {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let runtime = AppRuntimeConfig::from_env();
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("terminal"))
+                .create_window(Window::default_attributes().with_title(runtime.window_title))
                 .unwrap(),
         );
         window.set_maximized(true);
-        window.set_theme(Some(Theme::Dark));
+        window.set_theme(runtime.theme);
 
         let instance = wgpu::Instance::default();
 
@@ -115,7 +116,7 @@ impl ApplicationHandler<Message> for TerminalView {
         };
 
         let multisample = wgpu::MultisampleState::default();
-        let font_size = 25.0;
+        let font_size = runtime.font_size;
 
         surface.configure(&device, &config);
 
@@ -148,7 +149,7 @@ impl ApplicationHandler<Message> for TerminalView {
         self.request_redraw_if_needed();
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: Message) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Message) {
         match event {
             Message::PtyDataReceived(tab_id, data) => {
                 if let Some(app) = self.app.as_mut() {
@@ -159,13 +160,14 @@ impl ApplicationHandler<Message> for TerminalView {
             }
             Message::PtyExited(tab_id) => {
                 if let Some(app) = self.app.as_mut() {
-                    if let Some(idx) = app.tabs.iter().position(|tab| tab.id == tab_id) {
-                        app.tabs.remove(idx);
-                        if app.tabs.is_empty() {
-                            std::process::exit(0);
+                    if let Some(idx) = app.session.tabs.iter().position(|tab| tab.id == tab_id) {
+                        app.session.tabs.remove(idx);
+                        if app.session.tabs.is_empty() {
+                            event_loop.exit();
+                            return;
                         }
-                        if app.active_tab >= app.tabs.len() {
-                            app.active_tab = app.tabs.len() - 1;
+                        if app.session.active_tab >= app.session.tabs.len() {
+                            app.session.active_tab = app.session.tabs.len() - 1;
                         }
                         self.terminal_dirty = true;
                         self.request_redraw_if_needed();
@@ -173,7 +175,8 @@ impl ApplicationHandler<Message> for TerminalView {
                 }
             }
             Message::Exit => {
-                std::process::exit(0);
+                event_loop.exit();
+                return;
             }
         }
     }
@@ -234,8 +237,9 @@ impl ApplicationHandler<Message> for TerminalView {
                 });
 
                 let fg_color = state
+                    .session
                     .tabs
-                    .get(state.active_tab)
+                    .get(state.session.active_tab)
                     .map(|tab| tab.terminal.performer.current_fg)
                     .unwrap_or(glyphon::Color::rgb(229, 229, 229));
                 state

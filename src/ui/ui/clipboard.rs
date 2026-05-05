@@ -18,7 +18,7 @@ impl MyApp {
     }
 
     pub(super) fn select_all(&mut self) -> bool {
-        let Some(tab) = self.tabs.get(self.active_tab) else {
+        let Some(tab) = self.session.tabs.get(self.session.active_tab) else {
             return false;
         };
 
@@ -40,39 +40,23 @@ impl MyApp {
             return false;
         }
 
-        self.selection_start = Some((0, 0));
-        self.selection_end = Some((last_row_len - 1, last_row));
-        self.selecting = false;
+        self.interaction.selection_start = Some((0, 0));
+        self.interaction.selection_end = Some((last_row_len - 1, last_row));
+        self.interaction.selecting = false;
         true
     }
 
     fn selected_text(&self) -> Option<String> {
-        let tab = self.tabs.get(self.active_tab)?;
+        let tab = self.session.tabs.get(self.session.active_tab)?;
         let performer = &tab.terminal.performer;
 
-        let (Some((sx, sy)), Some((ex, ey))) = (self.selection_start, self.selection_end) else {
-            return None;
-        };
-
         let total_rows = performer.scrollback.len() + performer.grid.len();
-        if total_rows == 0 {
-            return None;
-        }
-
-        let mut a_row = sy.min(total_rows - 1);
-        let mut a_col = sx;
-        let mut b_row = ey.min(total_rows - 1);
-        let mut b_col = ex;
-
-        if (a_row, a_col) > (b_row, b_col) {
-            std::mem::swap(&mut a_row, &mut b_row);
-            std::mem::swap(&mut a_col, &mut b_col);
-        }
+        let range = self.current_selection_range(total_rows)?;
 
         let scrollback_len = performer.scrollback.len();
-        let mut lines = Vec::with_capacity(b_row.saturating_sub(a_row) + 1);
+        let mut lines = Vec::with_capacity(range.end.1.saturating_sub(range.start.1) + 1);
 
-        for abs_row in a_row..=b_row {
+        for abs_row in range.start.1..=range.end.1 {
             let row = if abs_row < scrollback_len {
                 &performer.scrollback[abs_row]
             } else {
@@ -84,13 +68,13 @@ impl MyApp {
                 continue;
             }
 
-            let row_start = if abs_row == a_row {
-                a_col.min(row.len() - 1)
+            let row_start = if abs_row == range.start.1 {
+                range.start.0.min(row.len() - 1)
             } else {
                 0
             };
-            let row_end = if abs_row == b_row {
-                b_col.min(row.len() - 1)
+            let row_end = if abs_row == range.end.1 {
+                range.end.0.min(row.len() - 1)
             } else {
                 row.len() - 1
             };
@@ -100,9 +84,7 @@ impl MyApp {
                 continue;
             }
 
-            let mut line: String = row[row_start..=row_end].iter().map(|cell| cell.c).collect();
-            line.truncate(line.trim_end_matches(' ').len());
-            lines.push(line);
+            lines.push(selection_line_text(row, row_start, row_end));
         }
 
         Some(lines.join("\n"))
@@ -123,8 +105,9 @@ impl MyApp {
         let normalized = text.replace("\r\n", "\n").replace('\n', "\r");
 
         let bracketed_paste_enabled = self
+            .session
             .tabs
-            .get(self.active_tab)
+            .get(self.session.active_tab)
             .map(|tab| tab.terminal.performer.bracketed_paste)
             .unwrap_or(false);
 
@@ -140,5 +123,65 @@ impl MyApp {
 
         self.send_to_pty(PtyInput::Data(data));
         self.reset_scrollback_view();
+    }
+}
+
+fn selection_line_text(row: &[crate::terminal::Cell], row_start: usize, row_end: usize) -> String {
+    let mut line: String = row[row_start..=row_end]
+        .iter()
+        .map(|cell| cell.display_text())
+        .collect();
+    line.truncate(line.trim_end_matches(' ').len());
+    line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::selection_line_text;
+    use crate::terminal::Cell;
+
+    #[test]
+    fn selection_line_text_trims_trailing_spaces() {
+        let row = [
+            Cell {
+                c: 'a',
+                text: "a".to_string(),
+                ..Default::default()
+            },
+            Cell {
+                c: 'b',
+                text: "b".to_string(),
+                ..Default::default()
+            },
+            Cell::default(),
+            Cell::default(),
+        ];
+
+        assert_eq!(selection_line_text(&row, 0, 3), "ab");
+    }
+
+    #[test]
+    fn selection_line_text_ignores_wide_continuation_cells() {
+        let row = [
+            Cell {
+                c: '中',
+                text: "中".to_string(),
+                wide_continuation: false,
+                ..Default::default()
+            },
+            Cell {
+                c: ' ',
+                text: String::new(),
+                wide_continuation: true,
+                ..Default::default()
+            },
+            Cell {
+                c: 'x',
+                text: "x".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        assert_eq!(selection_line_text(&row, 0, 2), "中x");
     }
 }
