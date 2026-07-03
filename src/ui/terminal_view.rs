@@ -76,9 +76,13 @@ impl ApplicationHandler<Message> for TerminalView {
         let runtime = AppRuntimeConfig::from_env();
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title(runtime.window_title))
+                .create_window(
+                    Window::default_attributes()
+                        .with_title(runtime.window_title),
+                )
                 .unwrap(),
         );
+
         window.set_maximized(true);
         window.set_theme(runtime.theme);
 
@@ -159,24 +163,23 @@ impl ApplicationHandler<Message> for TerminalView {
                 self.request_redraw_if_needed();
             }
             Message::PtyExited(tab_id) => {
-                if let Some(app) = self.app.as_mut() {
-                    if let Some(idx) = app.session.tabs.iter().position(|tab| tab.id == tab_id) {
-                        app.session.tabs.remove(idx);
-                        if app.session.tabs.is_empty() {
-                            event_loop.exit();
-                            return;
-                        }
-                        if app.session.active_tab >= app.session.tabs.len() {
-                            app.session.active_tab = app.session.tabs.len() - 1;
-                        }
-                        self.terminal_dirty = true;
-                        self.request_redraw_if_needed();
+                if let Some(app) = self.app.as_mut()
+                    && let Some(idx) = app.session.tabs.iter().position(|tab| tab.id == tab_id)
+                {
+                    app.session.tabs.remove(idx);
+                    if app.session.tabs.is_empty() {
+                        event_loop.exit();
+                        return;
                     }
+                    if app.session.active_tab >= app.session.tabs.len() {
+                        app.session.active_tab = app.session.tabs.len() - 1;
+                    }
+                    self.terminal_dirty = true;
+                    self.request_redraw_if_needed();
                 }
             }
             Message::Exit => {
                 event_loop.exit();
-                return;
             }
         }
     }
@@ -280,10 +283,13 @@ impl ApplicationHandler<Message> for TerminalView {
             WindowEvent::CursorMoved {
                 device_id: _,
                 position,
-            } => {
-                if state.handle_cursor_moved(position) {
-                    should_redraw = true;
-                }
+            } if state.handle_cursor_moved(position) => {
+                should_redraw = true;
+            }
+
+            WindowEvent::CursorLeft { .. } => {
+                state.interaction.mouse_position = winit::dpi::PhysicalPosition::new(-1000.0, -1000.0);
+                should_redraw = true;
             }
 
             WindowEvent::MouseInput {

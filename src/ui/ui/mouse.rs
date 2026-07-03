@@ -64,10 +64,10 @@ impl MyApp {
             needs_redraw = true;
         }
 
-        if let Some(info) = self.visible_scroll_indicator_info() {
-            if self.is_position_on_scroll_indicator_with_info(position, &info) {
-                needs_redraw = true;
-            }
+        if let Some(info) = self.visible_scroll_indicator_info()
+            && self.is_position_on_scroll_indicator_with_info(position, &info)
+        {
+            needs_redraw = true;
         }
 
         let cursor_changed = self.set_mouse_icon(position);
@@ -81,16 +81,15 @@ impl MyApp {
             && !self.interaction.selecting
             && self.interaction.selection_mode == SelectionMode::Char
             && self.interaction.selection_anchor.is_some()
+            && let Some(press_position) = self.interaction.left_press_position
         {
-            if let Some(press_position) = self.interaction.left_press_position {
-                let dx = position.x - press_position.x;
-                let dy = position.y - press_position.y;
-                if dx * dx + dy * dy
-                    >= CHAR_SELECTION_DRAG_THRESHOLD_PX * CHAR_SELECTION_DRAG_THRESHOLD_PX
-                {
-                    self.interaction.selecting = true;
-                    self.interaction.selection_start = self.interaction.selection_anchor;
-                }
+            let dx = position.x - press_position.x;
+            let dy = position.y - press_position.y;
+            if dx * dx + dy * dy
+                >= CHAR_SELECTION_DRAG_THRESHOLD_PX * CHAR_SELECTION_DRAG_THRESHOLD_PX
+            {
+                self.interaction.selecting = true;
+                self.interaction.selection_start = self.interaction.selection_anchor;
             }
         }
 
@@ -182,11 +181,10 @@ impl MyApp {
 
                     if self.modifiers.super_key()
                         && self.interaction.link_settings.enable_cmd_click_open
+                        && let Some(link) = self.hovered_link_span_at_mouse()
                     {
-                        if let Some(link) = self.hovered_link_span_at_mouse() {
-                            let _ = open_url_in_system_browser(&normalize_url_for_open(&link.url));
-                            return;
-                        }
+                        let _ = open_url_in_system_browser(&normalize_url_for_open(&link.url));
+                        return;
                     }
 
                     self.interaction.left_press_position = Some(self.interaction.mouse_position);
@@ -284,24 +282,24 @@ impl MyApp {
             self.renderer.line_height,
         );
 
-        if let Some(tab) = self.active_tab_mut() {
-            if tab.terminal.performer.mouse_mode != MouseMode::None {
-                let btn_code = match button {
-                    MouseButton::Left => 0u8,
-                    MouseButton::Middle => 1,
-                    MouseButton::Right => 2,
-                    _ => 3,
-                };
-                let pressed = state == ElementState::Pressed;
+        if let Some(tab) = self.active_tab_mut()
+            && tab.terminal.performer.mouse_mode != MouseMode::None
+        {
+            let btn_code = match button {
+                MouseButton::Left => 0u8,
+                MouseButton::Middle => 1,
+                MouseButton::Right => 2,
+                _ => 3,
+            };
+            let pressed = state == ElementState::Pressed;
 
-                tab.terminal
-                    .performer
-                    .report_mouse(mouse_cell_x, mouse_cell_y, btn_code, pressed);
+            tab.terminal
+                .performer
+                .report_mouse(mouse_cell_x, mouse_cell_y, btn_code, pressed);
 
-                if let Some(tx) = &tab.tx {
-                    for reply in tab.terminal.performer.drain_pty_replies() {
-                        let _ = tx.send(PtyInput::Data(reply));
-                    }
+            if let Some(tx) = &tab.tx {
+                for reply in tab.terminal.performer.drain_pty_replies() {
+                    let _ = tx.send(PtyInput::Data(reply));
                 }
             }
         }
@@ -369,9 +367,7 @@ impl MyApp {
                         let anchor_end = self.interaction.selection_end;
 
                         self.select_row(row);
-                        let new_start = self.interaction.selection_start;
 
-                        self.interaction.selection_start = new_start;
                         self.interaction.selection_end = anchor_end;
                     }
                 }
@@ -803,7 +799,7 @@ fn link_span_in_row_at_col(
             end += 1;
         }
 
-        return Some((start, end, url.clone()));
+        return Some((start, end, url.to_string()));
     }
 
     if !allow_plaintext_links || is_link_break_cell(&row[col]) {
@@ -960,16 +956,16 @@ mod tests {
     fn hyperlink_lookup_prefers_cell_and_falls_back_to_leading_wide_cell() {
         let row = vec![
             Cell {
-                hyperlink: Some("https://example.com".to_string()),
+                hyperlink: Some("https://example.com".to_string().into()),
                 c: '中',
-                text: "中".to_string(),
+                text: "中".to_string().into(),
                 wide_continuation: false,
                 ..Default::default()
             },
             Cell {
                 hyperlink: None,
                 c: ' ',
-                text: String::new(),
+                text: String::new().into(),
                 wide_continuation: true,
                 ..Default::default()
             },
@@ -991,7 +987,7 @@ mod tests {
         let row = vec![
             Cell {
                 c: 'l',
-                text: "localhost:3000/destek".to_string(),
+                text: "localhost:3000/destek".to_string().into(),
                 ..Default::default()
             },
             Cell::default(),
@@ -1009,14 +1005,14 @@ mod tests {
     fn filenames_are_not_detected_as_links() {
         let row = vec![Cell {
             c: 'p',
-            text: "package.json".to_string(),
+            text: "package.json".to_string().into(),
             ..Default::default()
         }];
         assert!(link_span_in_row_at_col(&row, 0, true).is_none());
 
         let row2 = vec![Cell {
             c: 'R',
-            text: "README.md".to_string(),
+            text: "README.md".to_string().into(),
             ..Default::default()
         }];
         assert!(link_span_in_row_at_col(&row2, 0, true).is_none());
@@ -1027,7 +1023,8 @@ mod tests {
         let row = vec![Cell {
             c: '.',
             text: "./crmFrontendNewModules/node_modules/@mui/material/ListItemSecondaryAction:"
-                .to_string(),
+                .to_string()
+                .into(),
             ..Default::default()
         }];
         assert!(link_span_in_row_at_col(&row, 0, true).is_none());

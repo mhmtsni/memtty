@@ -79,12 +79,9 @@ impl MyApp {
             return None;
         }
 
-        let Some(window) = tab
+        let window = tab
             .terminal
-            .visible_row_window(self.session.scroll_offset, requested_visible_rows)
-        else {
-            return None;
-        };
+            .visible_row_window(self.session.scroll_offset, requested_visible_rows)?;
 
         let scrollback_len = window.scrollback_len;
         let cursor_abs_row = scrollback_len + tab.terminal.performer.cursor_y;

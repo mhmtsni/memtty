@@ -14,8 +14,8 @@ pub(super) fn render_scroll_indicator_overlay(
         || scroll_indicator.is_mouse_on_indicator
     {
         renderer.push_rect_pixels(
-            renderer.width as f32 - INDICATOR_WIDTH - TERMINAL_PADDING_X as f32,
-            scroll_indicator.position_y as f32,
+            renderer.width as f32 - INDICATOR_WIDTH - TERMINAL_PADDING_X,
+            scroll_indicator.position_y,
             INDICATOR_WIDTH,
             scroll_indicator.height,
             Color::rgb(255, 255, 255),

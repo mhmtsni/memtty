@@ -110,7 +110,7 @@ pub struct Performer {
     last_printed: Option<char>,
     last_cell_pos: Option<(usize, usize)>,
     join_next_to_last_cell: bool,
-    current_hyperlink: Option<String>,
+    current_hyperlink: Option<std::sync::Arc<str>>,
 
     // Bytes that should be written back to the PTY (DA/DSR replies, etc.).
     pty_replies: Vec<Vec<u8>>,
@@ -130,7 +130,7 @@ impl Default for Performer {
         let default_bg = DEFAULT_BG;
         let default_cell = Cell {
             c: ' ',
-            text: " ".to_string(),
+            text: smol_str::SmolStr::new_inline(" "),
             wide_continuation: false,
             hyperlink: None,
             is_link_hovered: false,
@@ -275,7 +275,7 @@ impl Performer {
     fn normalize_grid_dimensions(&mut self) {
         let blank = Cell {
             c: ' ',
-            text: " ".to_string(),
+            text: smol_str::SmolStr::new_inline(" "),
             wide_continuation: false,
             hyperlink: None,
             is_link_hovered: false,
@@ -303,7 +303,7 @@ impl Performer {
     fn empty_cell(&self) -> Cell {
         Cell {
             c: ' ',
-            text: " ".to_string(),
+            text: smol_str::SmolStr::new_inline(" "),
             wide_continuation: false,
             hyperlink: None,
             is_link_hovered: false,
@@ -331,9 +331,11 @@ impl Performer {
 
             if full_screen_region {
                 if let Some(old_row) = self.grid.pop_front() {
-                    self.scrollback.push_back(old_row);
-                    if self.scrollback.len() > MAX_SCROLLBACK {
-                        self.scrollback.pop_front();
+                    if !self.in_alt_screen {
+                        self.scrollback.push_back(old_row);
+                        if self.scrollback.len() > MAX_SCROLLBACK {
+                            self.scrollback.pop_front();
+                        }
                     }
                     self.grid.push_back(self.empty_row()); // push back at real bottom
                 } else {
@@ -400,7 +402,7 @@ impl Performer {
         // Save normal screen
         let blank = Cell {
             c: ' ',
-            text: " ".to_string(),
+            text: smol_str::SmolStr::new_inline(" "),
             wide_continuation: false,
             hyperlink: None,
             is_link_hovered: false,
@@ -546,7 +548,9 @@ impl Performer {
         if cell.wide_continuation {
             return false;
         }
-        cell.text.push(c);
+        let mut s = cell.text.to_string();
+        s.push(c);
+        cell.text = smol_str::SmolStr::new(s);
         true
     }
 }

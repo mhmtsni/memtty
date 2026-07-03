@@ -184,10 +184,10 @@ fn history_commands() -> Vec<String> {
 fn history_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    if let Ok(histfile) = std::env::var("HISTFILE") {
-        if !histfile.is_empty() {
-            paths.push(PathBuf::from(histfile));
-        }
+    if let Ok(histfile) = std::env::var("HISTFILE")
+        && !histfile.is_empty()
+    {
+        paths.push(PathBuf::from(histfile));
     }
 
     if let Ok(home) = std::env::var("HOME") {
@@ -237,7 +237,7 @@ pub(super) fn draw_history_preview(row: &mut [Cell], cursor_x: usize, preview: &
     for (cell, ch) in row.iter_mut().skip(cursor_x).zip(preview.chars()) {
         *cell = Cell {
             c: ch,
-            text: ch.to_string(),
+            text: ch.to_string().into(),
             wide_continuation: false,
             hyperlink: None,
             is_link_hovered: false,

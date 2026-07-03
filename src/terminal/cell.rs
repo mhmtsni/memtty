@@ -1,14 +1,16 @@
 use glyphon::Color;
+use smol_str::SmolStr;
+use std::sync::Arc;
 
 use super::colors::{DEFAULT_BG, DEFAULT_FG};
 
 #[derive(Clone, Debug)]
 pub struct Cell {
     pub c: char,
-    pub text: String,
+    pub text: SmolStr,
     // True when this cell is the trailing half of a double-width character.
     pub wide_continuation: bool,
-    pub hyperlink: Option<String>,
+    pub hyperlink: Option<Arc<str>>,
     pub is_link_hovered: bool,
     pub fg: Color,
     pub bg: Color,
@@ -34,7 +36,7 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             c: ' ',
-            text: " ".to_string(),
+            text: SmolStr::new_inline(" "),
             wide_continuation: false,
             hyperlink: None,
             is_link_hovered: false,

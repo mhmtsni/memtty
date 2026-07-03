@@ -14,6 +14,7 @@ vte = "0.15.0"
 unicode-width = "0.1.14"
 wgpu = { version = "28.0.0", default-features = false, features = ["metal"] }
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+smol_str = "0.3.6"
 
 [profile.dev]
 opt-level = 1

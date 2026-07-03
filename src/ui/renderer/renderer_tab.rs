@@ -246,7 +246,7 @@ fn render_settings_panel(renderer: &mut super::Renderer, settings: SettingsPanel
             } else {
                 Color::rgb(45, 55, 66)
             },
-            if item.is_hovered { 1.0 } else { 1.0 },
+            1.0,
         );
 
         render_settings_control(renderer, item);

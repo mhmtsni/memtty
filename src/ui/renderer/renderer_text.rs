@@ -24,10 +24,11 @@ pub(super) fn rebuild_text_spans(
         for (col_i, cell) in row[..last_non_space].iter().enumerate() {
             let (mut fg, _bg) = effective_colors(cell);
 
-            if let Some((cursor_col, cursor_row, cursor_color)) = cursor_block_cell {
-                if cursor_row == row_i && cursor_col == col_i {
-                    fg = contrast_text_color(cursor_color);
-                }
+            if let Some((cursor_col, cursor_row, cursor_color)) = cursor_block_cell
+                && cursor_row == row_i
+                && cursor_col == col_i
+            {
+                fg = contrast_text_color(cursor_color);
             }
 
             let attrs = build_attrs(cell, fg, renderer.font_family_name);

@@ -55,10 +55,8 @@ impl Performer {
                     self.cursor_y = self.cursor_y.saturating_sub(1);
                 }
             }
-            (None, b'H') => {
-                if self.cursor_x < self.tab_stops.len() {
-                    self.tab_stops[self.cursor_x] = true;
-                }
+            (None, b'H') if self.cursor_x < self.tab_stops.len() => {
+                self.tab_stops[self.cursor_x] = true;
             }
             (None, b'c') => {
                 *self = Performer::default();
@@ -67,8 +65,7 @@ impl Performer {
                 for row in &mut self.grid {
                     for cell in row.iter_mut() {
                         cell.c = 'E';
-                        cell.text.clear();
-                        cell.text.push('E');
+                        cell.text = smol_str::SmolStr::new_inline("E");
                         cell.wide_continuation = false;
                         cell.hyperlink = None;
                         cell.is_link_hovered = false;

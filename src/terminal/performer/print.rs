@@ -17,11 +17,11 @@ impl Performer {
             || is_emoji_modifier
             || UnicodeWidthChar::width(c).unwrap_or(0) == 0;
 
-        if self.join_next_to_last_cell || is_grapheme_extend {
-            if self.append_to_last_cell_grapheme(c) {
-                self.join_next_to_last_cell = c == ZWJ;
-                return;
-            }
+        if (self.join_next_to_last_cell || is_grapheme_extend)
+            && self.append_to_last_cell_grapheme(c)
+        {
+            self.join_next_to_last_cell = c == ZWJ;
+            return;
         }
 
         let width = UnicodeWidthChar::width(c).unwrap_or(0);
@@ -69,7 +69,7 @@ impl Performer {
 
         self.grid[self.cursor_y][self.cursor_x] = Cell {
             c,
-            text: c.to_string(),
+            text: c.to_string().into(),
             wide_continuation: false,
             hyperlink: self.current_hyperlink.clone(),
             is_link_hovered: false,
@@ -84,7 +84,7 @@ impl Performer {
         if width == 2 {
             self.grid[self.cursor_y][self.cursor_x + 1] = Cell {
                 c: ' ',
-                text: String::new(),
+                text: smol_str::SmolStr::default(),
                 wide_continuation: true,
                 hyperlink: self.current_hyperlink.clone(),
                 is_link_hovered: false,

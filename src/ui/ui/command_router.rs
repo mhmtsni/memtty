@@ -60,14 +60,14 @@ fn shortcut_intent_for_super_char(c: &str) -> Option<ShortcutIntent> {
         "c" => Some(ShortcutIntent::Copy),
         "a" => Some(ShortcutIntent::SelectAll),
         _ => {
-            if c.len() == 1 {
-                if let Some(ch) = c.chars().next() {
-                    if ch.is_ascii_digit() && ch != '0' {
-                        return Some(ShortcutIntent::SwitchToTab(
-                            ch.to_digit(10).unwrap() as usize - 1,
-                        ));
-                    }
-                }
+            if c.len() == 1
+                && let Some(ch) = c.chars().next()
+                && ch.is_ascii_digit()
+                && ch != '0'
+            {
+                return Some(ShortcutIntent::SwitchToTab(
+                    ch.to_digit(10).unwrap() as usize - 1,
+                ));
             }
             None
         }

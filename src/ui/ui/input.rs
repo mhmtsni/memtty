@@ -26,13 +26,13 @@ impl MyApp {
             return;
         }
 
-        if let Some(text) = event.text.as_ref() {
-            if !text.is_empty() {
-                self.clear_selection();
-                self.record_text_input(text);
-                self.send_to_pty(PtyInput::Data(text.as_bytes().to_vec()));
-                self.reset_scrollback_view();
-            }
+        if let Some(text) = event.text.as_ref()
+            && !text.is_empty()
+        {
+            self.clear_selection();
+            self.record_text_input(text);
+            self.send_to_pty(PtyInput::Data(text.as_bytes().to_vec()));
+            self.reset_scrollback_view();
         }
     }
 
@@ -74,10 +74,10 @@ impl MyApp {
                 }
             }
             ShortcutIntent::CloseTab => {
-                if !self.close_active_tab() {
-                    if let Some(proxy) = proxy {
-                        let _ = proxy.send_event(Message::Exit);
-                    }
+                if !self.close_active_tab()
+                    && let Some(proxy) = proxy
+                {
+                    let _ = proxy.send_event(Message::Exit);
                 }
             }
             ShortcutIntent::Copy => {

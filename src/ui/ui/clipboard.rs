@@ -145,12 +145,12 @@ mod tests {
         let row = [
             Cell {
                 c: 'a',
-                text: "a".to_string(),
+                text: "a".to_string().into(),
                 ..Default::default()
             },
             Cell {
                 c: 'b',
-                text: "b".to_string(),
+                text: "b".to_string().into(),
                 ..Default::default()
             },
             Cell::default(),
@@ -165,19 +165,19 @@ mod tests {
         let row = [
             Cell {
                 c: '中',
-                text: "中".to_string(),
+                text: "中".to_string().into(),
                 wide_continuation: false,
                 ..Default::default()
             },
             Cell {
                 c: ' ',
-                text: String::new(),
+                text: String::new().into(),
                 wide_continuation: true,
                 ..Default::default()
             },
             Cell {
                 c: 'x',
-                text: "x".to_string(),
+                text: "x".to_string().into(),
                 ..Default::default()
             },
         ];

@@ -11,24 +11,24 @@ impl Performer {
         let arg = |i: usize| -> &[u8] { params.get(i).copied().unwrap_or(b"") };
 
         match cmd {
-            0 | 1 | 2 => self.set_window_title(params),
+            0..=2 => self.set_window_title(params),
             4 => self.set_palette_entries(params),
             8 => {
                 let uri = arg(2);
                 if uri.is_empty() {
                     self.current_hyperlink = None;
                 } else {
-                    self.current_hyperlink = Some(String::from_utf8_lossy(uri).to_string());
+                    self.current_hyperlink = Some(String::from_utf8_lossy(uri).to_string().into());
                 }
             }
             10 => self.set_default_foreground(arg(1)),
             11 => self.set_default_background(arg(1)),
             52 => {
-                if let Ok(spec) = std::str::from_utf8(arg(2)) {
-                    if spec == "?" {
-                        let target = std::str::from_utf8(arg(1)).unwrap_or("c");
-                        self.queue_pty_reply(format!("\x1b]52;{};\x07", target).into_bytes());
-                    }
+                if let Ok(spec) = std::str::from_utf8(arg(2))
+                    && spec == "?"
+                {
+                    let target = std::str::from_utf8(arg(1)).unwrap_or("c");
+                    self.queue_pty_reply(format!("\x1b]52;{};\x07", target).into_bytes());
                 }
             }
             133 => {}
@@ -77,41 +77,37 @@ impl Performer {
             let spec = arg(i + 1);
             if let (Ok(idx_str), Ok(spec_str)) =
                 (std::str::from_utf8(idx_bytes), std::str::from_utf8(spec))
+                && let Ok(n) = idx_str.parse::<u8>()
+                && let Some(color) = parse_color_spec(spec_str)
             {
-                if let Ok(n) = idx_str.parse::<u8>() {
-                    if let Some(color) = parse_color_spec(spec_str) {
-                        self.palette_256[n as usize] = color;
-                    }
-                }
+                self.palette_256[n as usize] = color;
             }
             i += 2;
         }
     }
 
     fn set_default_foreground(&mut self, spec_bytes: &[u8]) {
-        if let Ok(spec) = std::str::from_utf8(spec_bytes) {
-            if spec != "?" {
-                if let Some(color) = parse_color_spec(spec) {
-                    let old = self.default_fg;
-                    self.default_fg = color;
-                    if self.current_fg == old {
-                        self.current_fg = color;
-                    }
-                }
+        if let Ok(spec) = std::str::from_utf8(spec_bytes)
+            && spec != "?"
+            && let Some(color) = parse_color_spec(spec)
+        {
+            let old = self.default_fg;
+            self.default_fg = color;
+            if self.current_fg == old {
+                self.current_fg = color;
             }
         }
     }
 
     fn set_default_background(&mut self, spec_bytes: &[u8]) {
-        if let Ok(spec) = std::str::from_utf8(spec_bytes) {
-            if spec != "?" {
-                if let Some(color) = parse_color_spec(spec) {
-                    let old = self.default_bg;
-                    self.default_bg = color;
-                    if self.current_bg == old {
-                        self.current_bg = color;
-                    }
-                }
+        if let Ok(spec) = std::str::from_utf8(spec_bytes)
+            && spec != "?"
+            && let Some(color) = parse_color_spec(spec)
+        {
+            let old = self.default_bg;
+            self.default_bg = color;
+            if self.current_bg == old {
+                self.current_bg = color;
             }
         }
     }

@@ -158,6 +158,17 @@ impl MyApp {
             return; // scrollback'e düşme
         }
 
+        if tab.terminal.performer.in_alt_screen {
+            if let Some(tx) = &tab.tx {
+                let seq = if scroll_amount > 0 { b"\x1b[A" } else { b"\x1b[B" };
+                let steps = scroll_amount.unsigned_abs() as usize * 3;
+                for _ in 0..steps {
+                    let _ = tx.send(PtyInput::Data(seq.to_vec()));
+                }
+            }
+            return;
+        }
+
         // Normal terminal: scrollback
         let max_offset = tab.terminal.performer.scrollback.len() as i32;
         let new_offset = (self.session.scroll_offset + scroll_amount)

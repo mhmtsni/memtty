@@ -19,22 +19,19 @@ impl MyApp {
             return rows;
         };
 
-        if self.interaction.link_settings.enable_hover_underline {
-            if let Some(link) = self.hovered_link_span_at_mouse() {
-                if link.abs_row >= window.start && link.abs_row < window.end {
+        if self.interaction.link_settings.enable_hover_underline
+            && let Some(link) = self.hovered_link_span_at_mouse()
+                && link.abs_row >= window.start && link.abs_row < window.end {
                     let rel_row = link.abs_row - window.start;
-                    if let Some(row) = rows.get_mut(rel_row) {
-                        if !row.is_empty() {
+                    if let Some(row) = rows.get_mut(rel_row)
+                        && !row.is_empty() {
                             let c0 = link.start_col.min(row.len() - 1);
                             let c1 = link.end_col.min(row.len() - 1);
                             for cell in row.iter_mut().take(c1 + 1).skip(c0) {
                                 cell.is_link_hovered = true;
                             }
                         }
-                    }
                 }
-            }
-        }
 
         if let Some(range) = self.current_selection_range(window.total_rows) {
             for abs_row in range.start.1..=range.end.1 {
@@ -67,15 +64,16 @@ impl MyApp {
             }
         }
 
-        if self.session.scroll_offset == 0 {
-            if let Some(preview) = self.current_history_preview() {
+        if self.session.scroll_offset == 0
+            && !terminal.performer.in_alt_screen
+            && let Some(preview) = self.current_history_preview()
+        {
                 let cursor_row = terminal.performer.cursor_y;
                 let cursor_x = terminal.performer.cursor_x;
                 if let Some(row) = rows.get_mut(cursor_row) {
                     super::history_completion::draw_history_preview(row, cursor_x, preview);
                 }
             }
-        }
 
         rows
     }

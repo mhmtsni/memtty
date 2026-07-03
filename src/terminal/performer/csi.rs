@@ -207,12 +207,14 @@ impl Performer {
     }
 
     fn delete_lines(&mut self, count: usize) {
-        for _ in 0..count {
-            if self.cursor_y < self.grid.len() {
-                self.grid.remove(self.cursor_y);
+        if self.cursor_y >= self.scroll_top && self.cursor_y <= self.scroll_bottom {
+            for _ in 0..count {
+                if self.cursor_y < self.grid.len() {
+                    self.grid.remove(self.cursor_y);
+                }
+                let ins = self.scroll_bottom.min(self.grid.len());
+                self.grid.insert(ins, self.empty_row());
             }
-            let ins = (self.scroll_bottom + 1).min(self.grid.len());
-            self.grid.insert(ins, self.empty_row());
         }
         self.cursor_x = 0;
         self.pending_wrap = false;
@@ -254,7 +256,7 @@ impl Performer {
 
     fn set_cursor_style(&mut self, mode: usize) {
         match mode {
-            0 | 1 | 2 => self.cursor_style = CursorStyle::Block,
+            0..=2 => self.cursor_style = CursorStyle::Block,
             3 | 4 => self.cursor_style = CursorStyle::Underline,
             5 | 6 => self.cursor_style = CursorStyle::Bar,
             _ => {}

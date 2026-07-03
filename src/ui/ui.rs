@@ -127,7 +127,7 @@ pub struct InteractionState {
 impl Default for InteractionState {
     fn default() -> Self {
         Self {
-            mouse_position: PhysicalPosition::new(0.0, 0.0),
+            mouse_position: PhysicalPosition::new(-1000.0, -1000.0),
             mouse_icon: CursorIcon::Text,
             mouse_button_held: None,
             mouse_hold_start: None,
@@ -190,7 +190,7 @@ impl MyApp {
             full_screen: false,
             session: SessionStore::new(Tab::new(0, tx_to_pty)),
             interaction: InteractionState::default(),
-            window,
+            window: window.clone(),
             modifiers: ModifiersState::empty(),
             renderer,
             cursor_blink_on: true,

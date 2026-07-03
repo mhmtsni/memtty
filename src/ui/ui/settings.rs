@@ -224,10 +224,10 @@ impl MyApp {
 
             let primary = self.primary_control_rect(row);
             let secondary = self.secondary_control_rect(key, primary);
-            if let Some(secondary) = secondary {
-                if Self::point_in_rect(position, secondary) {
-                    return Some(SettingsClickTarget::Secondary(key));
-                }
+            if let Some(secondary) = secondary
+                && Self::point_in_rect(position, secondary)
+            {
+                return Some(SettingsClickTarget::Secondary(key));
             }
             if Self::point_in_rect(position, primary) {
                 return Some(SettingsClickTarget::Primary(key));

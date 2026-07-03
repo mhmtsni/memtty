@@ -8,7 +8,7 @@ pub(super) struct SelectionRange {
 
 impl SelectionRange {
     pub fn normalized(self) -> Self {
-        if self.start <= self.end {
+        if selection_position_key(self.start) <= selection_position_key(self.end) {
             self
         } else {
             Self {
@@ -17,6 +17,10 @@ impl SelectionRange {
             }
         }
     }
+}
+
+fn selection_position_key((col, row): (usize, usize)) -> (usize, usize) {
+    (row, col)
 }
 
 impl MyApp {
@@ -63,5 +67,27 @@ mod tests {
         .normalized();
         assert_eq!(range.start, (1, 3));
         assert_eq!(range.end, (10, 8));
+    }
+
+    #[test]
+    fn selection_range_orders_by_row_before_column() {
+        let range = SelectionRange {
+            start: (10, 1),
+            end: (1, 2),
+        }
+        .normalized();
+        assert_eq!(range.start, (10, 1));
+        assert_eq!(range.end, (1, 2));
+    }
+
+    #[test]
+    fn selection_range_normalizes_reverse_rows_with_larger_column() {
+        let range = SelectionRange {
+            start: (1, 2),
+            end: (10, 1),
+        }
+        .normalized();
+        assert_eq!(range.start, (10, 1));
+        assert_eq!(range.end, (1, 2));
     }
 }
